@@ -6,6 +6,8 @@ import Dropzone, { DocMetadata } from "@/components/Dropzone";
 import SummaryCard from "@/components/SummaryCard";
 import ChatCopilot from "@/components/ChatCopilot";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
   const [serverDocs, setServerDocs] = useState<Record<string, DocMetadata>>({});
@@ -16,16 +18,14 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
 
-  // Restore session cleanly via async helper
+  // Restore session from localStorage & database on mount
   useEffect(() => {
     const restoreSavedSession = async () => {
       const savedSessionId = localStorage.getItem("docuiq_session_id");
       if (!savedSessionId) return;
 
       try {
-        const res = await fetch(
-          `http://localhost:8000/api/sessions/${savedSessionId}`,
-        );
+        const res = await fetch(`${API_BASE}/api/sessions/${savedSessionId}`);
         if (res.ok) {
           const data = await res.json();
           setSessionId(savedSessionId);
@@ -53,7 +53,7 @@ export default function Home() {
         files.forEach((f) => formData.append("files", f));
         if (sessionId) formData.append("session_id", sessionId);
 
-        const res = await fetch("http://localhost:8000/api/upload", {
+        const res = await fetch(`${API_BASE}/api/upload`, {
           method: "POST",
           body: formData,
         });
@@ -76,7 +76,7 @@ export default function Home() {
       }
     } catch (err) {
       console.error(err);
-      alert("Could not reach backend server at http://localhost:8000");
+      alert(`Could not reach backend server at ${API_BASE}`);
     } finally {
       setIsUploading(false);
     }
@@ -91,7 +91,7 @@ export default function Home() {
     setSummary("");
 
     try {
-      const res = await fetch("http://localhost:8000/api/summarize-stream", {
+      const res = await fetch(`${API_BASE}/api/summarize-stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -128,7 +128,7 @@ export default function Home() {
   const handleDeleteServerDoc = async (filename: string) => {
     if (!sessionId) return;
     try {
-      const res = await fetch("http://localhost:8000/api/delete-doc", {
+      const res = await fetch(`${API_BASE}/api/delete-doc`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, filename }),

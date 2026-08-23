@@ -1,6 +1,7 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-import React, { useState } from "react";
-import { Mic, MicOff, Send } from "lucide-react";
+"use client";
+
+import React, { useState, useRef, useEffect } from "react";
+import { Send, Mic, MicOff, Volume2, Bot, User, Sparkles } from "lucide-react";
 
 interface Message {
   sender: "user" | "ai";
@@ -11,74 +12,65 @@ interface ChatCopilotProps {
   sessionId: string | null;
 }
 
-interface SpeechRecognitionResultItem {
-  transcript: string;
-}
-
-interface SpeechRecognitionResultList {
-  [index: number]: {
-    [index: number]: SpeechRecognitionResultItem;
+interface SpeechRecognitionEvent {
+  results: {
+    [index: number]: {
+      [index: number]: {
+        transcript: string;
+      };
+    };
   };
 }
 
-interface SpeechRecognitionEvent {
-  results: SpeechRecognitionResultList;
-}
-
-interface CustomSpeechRecognition {
+interface SpeechRecognitionInstance extends EventTarget {
   lang: string;
   interimResults: boolean;
-  onstart: () => void;
-  onend: () => void;
-  onerror: () => void;
-  onresult: (event: SpeechRecognitionEvent) => void;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
   start: () => void;
+  stop: () => void;
 }
 
-interface CustomWindow extends Window {
-  SpeechRecognition?: new () => CustomSpeechRecognition;
-  webkitSpeechRecognition?: new () => CustomSpeechRecognition;
+interface SpeechRecognitionConstructor {
+  new (): SpeechRecognitionInstance;
 }
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function ChatCopilot({ sessionId }: ChatCopilotProps) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [isListening, setIsListening] = useState(false);
-  const [isSending, setIsSending] = useState(false);
+  const [input, setInput] = useState<string>("");
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [isSending, setIsSending] = useState<boolean>(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const toggleVoiceInput = () => {
-    const customWin = window as unknown as CustomWindow;
-    const SpeechRecognitionConstructor =
-      customWin.SpeechRecognition || customWin.webkitSpeechRecognition;
+  // Auto-scroll on new messages
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-    if (!SpeechRecognitionConstructor) {
-      alert(
-        "Speech Recognition is not supported in this browser. Please use Chrome or Edge.",
-      );
-      return;
+  // Load chat history from SQLite when session changes
+  useEffect(() => {
+    if (sessionId) {
+      fetch(`${API_BASE}/api/sessions/${sessionId}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && data.chat_history && data.chat_history.length > 0) {
+            setMessages(data.chat_history);
+          }
+        })
+        .catch((err) => console.error("Error fetching chat history:", err));
     }
-
-    if (isListening) {
-      setIsListening(false);
-      return;
-    }
-
-    const recognition = new SpeechRecognitionConstructor();
-    recognition.lang = "en-US";
-    recognition.interimResults = false;
-
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = () => setIsListening(false);
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const transcript = event.results[0][0].transcript;
-      setInput(transcript);
-      handleSendMessage(transcript);
-    };
-
-    recognition.start();
-  };
+  }, [sessionId]);
 
   const handleSendMessage = async (customMessage?: string) => {
     const msgToSend = customMessage || input;
@@ -92,7 +84,7 @@ export default function ChatCopilot({ sessionId }: ChatCopilotProps) {
     setIsSending(true);
 
     try {
-      const res = await fetch("http://localhost:8000/api/chat-stream", {
+      const res = await fetch(`${API_BASE}/api/chat-stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, message: msgToSend }),
@@ -120,6 +112,7 @@ export default function ChatCopilot({ sessionId }: ChatCopilotProps) {
         });
       }
 
+      // Voice read-back
       if ("speechSynthesis" in window && fullReply) {
         const utterance = new SpeechSynthesisUtterance(fullReply);
         window.speechSynthesis.speak(utterance);
@@ -131,57 +124,124 @@ export default function ChatCopilot({ sessionId }: ChatCopilotProps) {
     }
   };
 
-  return (
-    <div className="bg-[#121215] border border-zinc-800 rounded-2xl p-6 flex flex-col justify-between shadow-xl mt-6">
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold tracking-wide uppercase text-zinc-400">
-            Interactive Copilot (Voice & Text)
-          </h2>
-          <span className="text-xs text-zinc-400">
-            Grounded in Uploaded Content
-          </span>
-        </div>
+  const handleSpeechInput = () => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
 
-        <div className="bg-black/60 border border-zinc-800/80 rounded-xl p-4 h-64 overflow-y-auto space-y-3">
-          {messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center text-zinc-400 text-xs">
-              <span>
-                Have doubts about your document? Tap the microphone or type
-                below.
-              </span>
-            </div>
-          ) : (
-            messages.map((m, i) => (
-              <div
-                key={i}
-                className={`flex flex-col ${m.sender === "user" ? "items-end" : "items-start"}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-xl px-3.5 py-2 text-xs leading-relaxed ${
-                    m.sender === "user"
-                      ? "bg-lime-500 text-black font-medium"
-                      : "bg-zinc-800 text-zinc-200 border border-zinc-700"
-                  }`}
-                >
-                  {m.text}
-                </div>
-              </div>
-            ))
-          )}
+    if (!SpeechRecognition) {
+      alert(
+        "Speech Recognition is not supported by your browser. Please use Google Chrome or Edge.",
+      );
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const transcript = event.results[0][0].transcript;
+      setInput(transcript);
+      handleSendMessage(transcript);
+    };
+
+    recognition.start();
+  };
+
+  const handleTextToSpeech = (text: string) => {
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      window.speechSynthesis.speak(utterance);
+    }
+  };
+
+  return (
+    <div className="mt-8 bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-xl">
+      <div className="flex items-center justify-between pb-4 border-b border-zinc-800 mb-4">
+        <div className="flex items-center gap-2">
+          <Bot className="w-5 h-5 text-lime-400" />
+          <h2 className="text-lg font-semibold text-white">
+            Voice & Text Copilot
+          </h2>
         </div>
+        <span className="text-xs px-2.5 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
+          Grounded Q&A
+        </span>
       </div>
 
-      <div className="mt-4 flex items-center space-x-2">
+      <div className="h-64 overflow-y-auto space-y-4 pr-2 mb-4 scrollbar-thin scrollbar-thumb-zinc-700">
+        {messages.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-zinc-500 text-sm">
+            <Sparkles className="w-8 h-8 mb-2 text-zinc-600" />
+            <p>Upload a document and ask questions about its contents.</p>
+          </div>
+        ) : (
+          messages.map((msg, idx) => (
+            <div
+              key={idx}
+              className={`flex items-start gap-3 ${
+                msg.sender === "user" ? "justify-end" : "justify-start"
+              }`}
+            >
+              {msg.sender === "ai" && (
+                <div className="w-7 h-7 rounded-full bg-lime-500/10 border border-lime-500/30 flex items-center justify-center shrink-0">
+                  <Bot className="w-4 h-4 text-lime-400" />
+                </div>
+              )}
+              <div
+                className={`max-w-[80%] rounded-xl px-4 py-2.5 text-sm ${
+                  msg.sender === "user"
+                    ? "bg-lime-500 text-black font-medium"
+                    : "bg-zinc-800 text-zinc-200 border border-zinc-700"
+                }`}
+              >
+                <p className="whitespace-pre-wrap">
+                  {msg.text ||
+                    (isSending && idx === messages.length - 1
+                      ? "Generating response..."
+                      : "")}
+                </p>
+                {msg.sender === "ai" && msg.text && (
+                  <button
+                    onClick={() => handleTextToSpeech(msg.text)}
+                    className="mt-2 text-zinc-400 hover:text-white flex items-center gap-1 text-xs transition"
+                  >
+                    <Volume2 className="w-3.5 h-3.5" /> Speak
+                  </button>
+                )}
+              </div>
+              {msg.sender === "user" && (
+                <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center shrink-0">
+                  <User className="w-4 h-4 text-zinc-300" />
+                </div>
+              )}
+            </div>
+          ))
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleSendMessage();
+        }}
+        className="flex items-center gap-2"
+      >
         <button
-          onClick={toggleVoiceInput}
-          disabled={!sessionId}
-          className={`p-3 rounded-xl border transition ${
+          type="button"
+          onClick={handleSpeechInput}
+          className={`p-2.5 rounded-lg border transition ${
             isListening
               ? "bg-red-500/20 border-red-500 text-red-400 animate-pulse"
-              : "bg-black/60 border-zinc-700 hover:border-zinc-600 text-zinc-300"
+              : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700"
           }`}
-          title="Voice Ask"
+          title="Speech to Text"
         >
           {isListening ? (
             <MicOff className="w-4 h-4" />
@@ -194,24 +254,23 @@ export default function ChatCopilot({ sessionId }: ChatCopilotProps) {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
           placeholder={
             sessionId
-              ? "Ask a question about the document..."
-              : "Upload a document first..."
+              ? "Ask a question about your documents..."
+              : "Upload documents first to start chatting..."
           }
           disabled={!sessionId || isSending}
-          className="flex-1 bg-black/60 border border-zinc-700 focus:border-lime-400 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-500 outline-none transition"
+          className="flex-1 bg-zinc-800/80 border border-zinc-700 rounded-lg px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-lime-500 disabled:opacity-50"
         />
 
         <button
-          onClick={() => handleSendMessage()}
+          type="submit"
           disabled={!sessionId || !input.trim() || isSending}
-          className="p-3 bg-lime-500 hover:bg-lime-400 disabled:opacity-40 text-black rounded-xl transition shadow-lg shadow-lime-500/10"
+          className="bg-lime-500 hover:bg-lime-400 disabled:opacity-50 text-black px-4 py-2.5 rounded-lg font-medium text-sm flex items-center gap-1.5 transition"
         >
           <Send className="w-4 h-4" />
         </button>
-      </div>
+      </form>
     </div>
   );
 }
