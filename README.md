@@ -102,41 +102,31 @@ This keeps sensitive API keys on the server side and provides a clean separation
                          │      Models          │
                          └──────────────────────┘
 ```
+---
+## ⚡ Key Features
+
+* **High-Speed Ingestion & Multimodal OCR**: Ultra-fast native digital extraction via PyMuPDF alongside Groq Multimodal Vision (`qwen/qwen3.6-27b`) for automatic transcription of scanned PDFs, receipts, and image files.
+* **Instant Streaming Summarization**: Multi-length (`Short`, `Medium`, `Long`) summaries streamed with sub-second time-to-first-token.
+* **Multi-Language Intelligence**: Summarize and converse in English, Spanish, French, German, or Hindi.
+* **Grounded Document Copilot**: Context-aware Q&A locked strictly to uploaded document contents to eliminate hallucinations.
+* **Markdown-Aware Text-to-Speech (TTS)**: Clean voice synthesis engine that strips raw Markdown formatting syntax (`##`, `**`, `*`, `_`, `>`) and includes full **Play / Pause / Resume / Stop** controls.
+* **High-Availability Inference**: Backed by high-throughput LPU inference with automated multi-model failover chains to prevent quota rate-limiting (`429`).
+* **Session Persistence**: SQLite-backed document session state tracking word counts, page counts, and metadata.
+* **Zero Cold-Start API**: Configured with automated health-check pings to prevent free-tier server spindown.
 
 ---
 
-# 🛠️ Tech Stack
+## 🛠️ Architecture & Tech Stack
 
-## Frontend
-
-| Technology              | Purpose                        |
-| ----------------------- | ------------------------------ |
-| **Next.js**             | React-based frontend framework |
-| **React**               | Interactive UI                 |
-| **TypeScript**          | Type-safe development          |
-| **CSS / UI Components** | Responsive interface           |
-| **Web APIs**            | Text-to-speech functionality   |
-
-## Backend
-
-| Technology              | Purpose             |
-| ----------------------- | ------------------- |
-| **Python**              | Backend development |
-| **FastAPI**             | REST API and server |
-| **Uvicorn**             | ASGI server         |
-| **Groq API**            | AI inference        |
-| **Streaming Responses** | Real-time AI output |
-
-## Deployment
-
-| Platform   | Component      |
-| ---------- | -------------- |
-| **Vercel** | Frontend       |
-| **Render** | Backend        |
-| **GitHub** | Source control |
-
----
-
+| Layer | Technologies |
+| :--- | :--- |
+| **Frontend** | Next.js 14/15 (App Router), React, TypeScript, Tailwind CSS, Lucide Icons |
+| **Backend** | FastAPI, Uvicorn, SQLite, PyMuPDF (`fitz`), Pillow |
+| **AI Text Inference** | Groq LPU Engine (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`) |
+| **AI Vision OCR** | Groq Vision (`qwen/qwen3.6-27b`, `meta-llama/llama-4-scout-17b-16e-instruct`) |
+| **Speech Engine** | Web Speech Synthesis API & Web Speech Recognition API |
+| **Monitoring** | UptimeRobot (`GET /health` Keep-Alive) |
+| **Deployment** | Frontend on **Vercel**, Backend API on **Render** |
 # 📂 Project Structure
 
 ```text
