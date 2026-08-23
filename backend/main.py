@@ -9,15 +9,14 @@ import fitz  # PyMuPDF
 from groq import Groq
 from pydantic import BaseModel
 
-# Initialize Groq client
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Ultra-fast open production models on Groq
+# Active supported models on Groq
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
 ]
 
 app = FastAPI(title="DocuIQ Backend", version="2.0.0")
@@ -124,7 +123,7 @@ async def summarize_document(req: SummarizeRequest):
         raise HTTPException(status_code=404, detail="Document text not found")
         
     doc_text = budget_tokens(row[0])
-    system_prompt = f"You are DocuIQ, an expert document intelligence assistant. Summarize the content in {req.language}. Desired Length/Style: {req.length}. Use clean markdown formatting with bullet points."
+    system_prompt = f"You are DocuIQ, an expert document intelligence assistant. Summarize the content in {req.language}. Desired Length/Style: {req.length}. Use clean markdown formatting with bullet points and bold key terms."
     
     async def generate_stream() -> AsyncGenerator[str, None]:
         if not groq_client:
