@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import tempfile
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -9,17 +9,16 @@ import fitz  # PyMuPDF
 import google.generativeai as genai
 from pydantic import BaseModel
 
-# Parse multiple comma-separated keys from environment (e.g. key1,key2,key3)
-raw_keys = os.getenv("GEMINI_API_KEY", "")
-API_KEYS: List[str] = [k.strip() for k in raw_keys.split(",") if k.strip()]
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-# Preferred production models in order of speed and quota
-MODEL_NAMES = [
-    "models/gemini-2.5-flash",
-    "models/gemini-1.5-flash",
+# Production models available across free and paid tier keys
+MODEL_CANDIDATES = [
     "gemini-1.5-flash",
     "gemini-2.0-flash",
-    "gemini-3.6-flash",
+    "gemini-2.5-flash",
+    "gemini-1.5-pro",
 ]
 
 app = FastAPI(title="DocuIQ Backend", version="2.0.0")
@@ -63,7 +62,7 @@ def extract_pdf_text(file_bytes: bytes, max_pages: int = 35) -> tuple[str, int]:
                 text_chunks.append(f"--- Page {page_idx + 1} ---\n{text}")
                 
     extracted = "\n\n".join(text_chunks)
-    return (extracted if extracted else "Visual document context."), total_pages
+    return (extracted if extracted else "Visual document content."), total_pages
 
 def budget_tokens(text: str, max_chars: int = 35000) -> str:
     if len(text) > max_chars:
@@ -137,22 +136,24 @@ async def summarize_document(req: SummarizeRequest):
     """
     
     async def generate_stream() -> AsyncGenerator[str, None]:
-        # Iterate through all configured API keys and model candidates
-        keys_to_use = API_KEYS if API_KEYS else [""]
-        for current_key in keys_to_use:
-            if current_key:
-                genai.configure(api_key=current_key)
-            for m_name in MODEL_NAMES:
-                try:
-                    model = genai.GenerativeModel(m_name)
-                    response = model.generate_content(prompt, stream=True)
-                    for chunk in response:
-                        if chunk.text:
-                            yield chunk.text
+        last_error = ""
+        for m_name in MODEL_CANDIDATES:
+            try:
+                model = genai.GenerativeModel(m_name)
+                response = model.generate_content(prompt, stream=True)
+                has_yielded = False
+                for chunk in response:
+                    if chunk.text:
+                        has_yielded = True
+                        yield chunk.text
+                if has_yielded:
                     return
-                except Exception:
-                    continue
-        yield "\n[Error: All API keys/models exhausted. Please check rate limits.]"
+            except Exception as e:
+                last_error = str(e)
+                print(f"[Gemini Error on {m_name}]: {last_error}")
+                continue
+                
+        yield f"\n[Streaming Error: {last_error or 'No response from Gemini models.'}]"
 
     return StreamingResponse(generate_stream(), media_type="text/plain")
 
@@ -185,20 +186,21 @@ async def chat_document(req: ChatRequest):
     """
     
     async def generate_chat_stream() -> AsyncGenerator[str, None]:
-        keys_to_use = API_KEYS if API_KEYS else [""]
-        for current_key in keys_to_use:
-            if current_key:
-                genai.configure(api_key=current_key)
-            for m_name in MODEL_NAMES:
-                try:
-                    model = genai.GenerativeModel(m_name)
-                    response = model.generate_content(prompt, stream=True)
-                    for chunk in response:
-                        if chunk.text:
-                            yield chunk.text
+        last_error = ""
+        for m_name in MODEL_CANDIDATES:
+            try:
+                model = genai.GenerativeModel(m_name)
+                response = model.generate_content(prompt, stream=True)
+                has_yielded = False
+                for chunk in response:
+                    if chunk.text:
+                        has_yielded = True
+                        yield chunk.text
+                if has_yielded:
                     return
-                except Exception:
-                    continue
-        yield "\n[Error: Unable to generate response.]"
+            except Exception as e:
+                last_error = str(e)
+                continue
+        yield f"\n[Chat Error: {last_error or 'Unable to generate response.'}]"
 
     return StreamingResponse(generate_chat_stream(), media_type="text/plain")
