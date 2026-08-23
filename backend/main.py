@@ -1,6 +1,7 @@
 import io
 import os
 import sqlite3
+import tempfile
 from typing import AsyncGenerator
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,9 +17,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
+# Set Tesseract binary path for Linux containers if available
+if os.path.exists("/usr/bin/tesseract"):
+    pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+
 app = FastAPI(title="DocuIQ Backend", version="2.0.0")
 
-# Enable CORS for all origins and headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,8 +31,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# SQLite initialization
-DB_FILE = "docuiq.db"
+# Use system temp directory for SQLite database
+DB_FILE = os.path.join(tempfile.gettempdir(), "docuiq.db")
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -48,15 +52,18 @@ def init_db():
 
 init_db()
 
-# Extraction and token-budgeting helpers
 def process_image_ocr(image_bytes: bytes) -> str:
-    img = Image.open(io.BytesIO(image_bytes))
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    if img.width > 1600:
-        ratio = 1600 / img.width
-        img = img.resize((1600, int(img.height * ratio)), Image.Resampling.LANCZOS)
-    return pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        if img.width > 1600:
+            ratio = 1600 / img.width
+            img = img.resize((1600, int(img.height * ratio)), Image.Resampling.LANCZOS)
+        return pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+    except Exception as e:
+        print(f"[OCR Warning]: {e}")
+        return "OCR processing failed or image contains no readable text."
 
 def process_pdf_stream(file_bytes: bytes, max_pages: int = 50) -> tuple[str, int]:
     text_chunks = []
@@ -66,14 +73,20 @@ def process_pdf_stream(file_bytes: bytes, max_pages: int = 50) -> tuple[str, int
             page = doc[page_idx]
             page_text = page.get_text().strip()
             if not page_text or len(page_text) < 30:
-                pix = page.get_pixmap(dpi=150)
-                img = Image.open(io.BytesIO(pix.tobytes("png")))
-                if img.width > 1600:
-                    img = img.resize((1600, int(img.height * (1600 / img.width))), Image.Resampling.LANCZOS)
-                page_text = pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+                try:
+                    pix = page.get_pixmap(dpi=150)
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    if img.width > 1600:
+                        img = img.resize((1600, int(img.height * (1600 / img.width))), Image.Resampling.LANCZOS)
+                    page_text = pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+                except Exception as ocr_err:
+                    print(f"[OCR Page {page_idx} Error]: {ocr_err}")
+            
             if page_text:
                 text_chunks.append(f"--- Page {page_idx + 1} ---\n{page_text}")
-    return "\n\n".join(text_chunks), total_pages
+                
+    extracted = "\n\n".join(text_chunks)
+    return (extracted if extracted else "No readable text found in document."), total_pages
 
 def budget_tokens(text: str, max_chars: int = 35000) -> str:
     if len(text) > max_chars:
@@ -81,7 +94,6 @@ def budget_tokens(text: str, max_chars: int = 35000) -> str:
         return text[:half] + "\n\n[... truncated for rapid streaming ...]\n\n" + text[-half:]
     return text
 
-# Health Check Endpoints
 @app.get("/")
 @app.get("/health")
 def health_check():
@@ -92,12 +104,15 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
     try:
         content = await file.read()
         filename = file.filename or "document"
+        
         if filename.lower().endswith(".pdf"):
             extracted_text, total_pages = process_pdf_stream(content)
         else:
             extracted_text = process_image_ocr(content)
             total_pages = 1
+            
         word_count = len(extracted_text.split())
+        
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute(
@@ -106,6 +121,7 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
         )
         conn.commit()
         conn.close()
+        
         return {
             "id": doc_id,
             "filename": filename,
@@ -114,7 +130,8 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
             "preview": extracted_text[:500]
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[Upload Route Error]: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 class SummarizeRequest(BaseModel):
     doc_id: str
@@ -128,8 +145,10 @@ async def summarize_document(req: SummarizeRequest):
     cursor.execute("SELECT extracted_text FROM documents WHERE id = ?", (req.doc_id,))
     row = cursor.fetchone()
     conn.close()
+    
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="Document text not found")
+        
     doc_text = budget_tokens(row[0])
     prompt = f"""
     You are DocuIQ, an expert document analyst.
@@ -140,15 +159,26 @@ async def summarize_document(req: SummarizeRequest):
     DOCUMENT CONTENT:
     {doc_text}
     """
+    
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            # Using stable model alias supported across all API key tiers
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
                 if chunk.text:
                     yield chunk.text
-        except Exception as err:
-            yield f"\n[Streaming Error: {str(err)}]"
+        except Exception:
+            try:
+                # Fallback model
+                model = genai.GenerativeModel("gemini-pro")
+                response = model.generate_content(prompt, stream=True)
+                for chunk in response:
+                    if chunk.text:
+                        yield chunk.text
+            except Exception as final_err:
+                yield f"\n[Streaming Error: {str(final_err)}]"
+
     return StreamingResponse(generate_stream(), media_type="text/plain")
 
 class ChatRequest(BaseModel):
@@ -162,8 +192,10 @@ async def chat_document(req: ChatRequest):
     cursor.execute("SELECT extracted_text FROM documents WHERE id = ?", (req.doc_id,))
     row = cursor.fetchone()
     conn.close()
+    
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="Document text not found")
+        
     doc_text = budget_tokens(row[0])
     prompt = f"""
     Answer the user's question strictly based ONLY on the document context below.
@@ -176,13 +208,22 @@ async def chat_document(req: ChatRequest):
     QUESTION:
     {req.question}
     """
+    
     async def generate_chat_stream() -> AsyncGenerator[str, None]:
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
                 if chunk.text:
                     yield chunk.text
-        except Exception as err:
-            yield f"\n[Error: {str(err)}]"
+        except Exception:
+            try:
+                model = genai.GenerativeModel("gemini-pro")
+                response = model.generate_content(prompt, stream=True)
+                for chunk in response:
+                    if chunk.text:
+                        yield chunk.text
+            except Exception as final_err:
+                yield f"\n[Error: {str(final_err)}]"
+
     return StreamingResponse(generate_chat_stream(), media_type="text/plain")
