@@ -1,69 +1,132 @@
-# DocuIQ — Intelligent Multimodal Document Assistant
+# DocuIQ — Next-Gen AI Document Intelligence & Voice Copilot
 
-DocuIQ is an end-to-end full-stack AI platform engineered to ingest complex documents (PDFs, scans, receipts), extract textual and visual content via OCR, stream multi-level summaries in real time, and support grounded conversational voice Q&A.
-
----
-
-## 1. Project Deliverables
-
-- **Live Application URL**: (https://frontend-seven-mauve-78.vercel.app)
-- **Backend API Documentation (Swagger)**: [https://docuiq-backend.onrender.com/docs](https://docuiq-backend.onrender.com/docs)
-- **Source Code Repository**: [https://github.com/adithichiripal/DocuIQ](https://github.com/adithichiripal/DocuIQ)
+DocuIQ is a high-performance document intelligence platform that extracts, structures, and synthesizes complex information from PDFs, receipts, and images. Featuring real-time streaming summaries, clean text-to-speech, and a grounded conversational copilot, DocuIQ runs on a modern decoupled full-stack architecture powered by high-speed LPU inference.
 
 ---
 
-## 2. Approach & Technical Architecture
+## 🔗 Live Deployments
 
-DocuIQ is built as a decoupled, cloud-native monorepo separating a high-performance FastAPI backend from a Next.js frontend:
-
-- **Dual Ingestion & OCR**: Native digital text is parsed via PyMuPDF (`fitz`), while scanned imagery and flattened pages fall back to Tesseract OCR with OpenCV image preprocessing.
-- **Real-Time Streaming Intelligence**: Powered by Google Gemini via chunked streaming HTTP responses, delivering multi-granularity (Quick, Detailed, Action Items) and multi-lingual summaries with low perceived latency.
-- **Strictly Grounded Voice Copilot**: Context-aware Q&A constrained strictly to extracted text to prevent hallucinations, enhanced with the Web Speech API and client-side Text-to-Speech (TTS).
-- **State Persistence & Cloud Hosting**: Document metadata, OCR results, and chat history persist in an SQLite/SQLAlchemy layer. The backend is containerized with Docker on Render, while the frontend is deployed to Vercel's Edge network.
+- **Live Application**: [frontend-seven-mauve-78.vercel.app](frontend-seven-mauve-78.vercel.app)
 
 ---
 
-## 3. System Architecture
+## ⚡ Key Features
 
-## 3. System Architecture
-
-```mermaid
-graph TD
-    A["Next.js 14 + Tailwind CSS<br/>(Voice & Markdown UI)"] -->|REST API / Token Streams| B["FastAPI Async Server"]
-    B --> C["PyPDF & Tesseract OCR<br/>(Ingestion Engine)"]
-    B --> D["Google Gemini API<br/>(Summarization & Copilot)"]
-    B --> E["SQLite / SQLAlchemy<br/>(Persistent Session Store)"]
-```
-
-## 4. Tech Stack
-
-- **Frontend**: Next.js 14/15 (App Router), React, Tailwind CSS, Lucide Icons, Web Speech API
-- **Backend**: FastAPI, Uvicorn, PyMuPDF, Pytesseract, SQLite, SQLAlchemy, Docker
-- **AI Model**: Google Gemini Pro SDK
-- **Cloud Infrastructure**: Vercel (Frontend), Render (Containerized Backend)
+- **High-Speed Ingestion & OCR**: Ultra-fast native digital extraction via PyMuPDF with multimodal visual support.
+- **Instant Streaming Summarization**: Multi-length (`Short`, `Medium`, `Long`) summaries streamed with sub-second time-to-first-token.
+- **Multi-Language Intelligence**: Summarize and converse in English, Spanish, French, German, or Hindi.
+- **Grounded Document Copilot**: Context-aware Q&A locked strictly to uploaded document contents to eliminate hallucinations.
+- **Markdown-Aware Text-to-Speech (TTS)**: Clean voice synthesis engine that strips raw Markdown formatting syntax (`##`, `**`, `*`, `_`, `>`) and includes full **Play / Pause / Resume / Stop** controls.
+- **High-Availability Inference**: Backed by high-throughput LPU inference with automated multi-model failover chains to prevent quota rate-limiting (`429`).
+- **Session Persistence**: SQLite-backed document session state tracking word counts, page counts, and metadata.
 
 ---
 
-## 5. Local Setup & Execution
+## 🛠️ Architecture & Tech Stack
 
-### Backend Setup
+| Layer             | Technologies                                                                      |
+| :---------------- | :-------------------------------------------------------------------------------- |
+| **Frontend**      | Next.js 14/15 (App Router), React, TypeScript, Tailwind CSS, Lucide Icons         |
+| **Backend**       | FastAPI, Uvicorn, SQLite, PyMuPDF (`fitz`), Pillow                                |
+| **AI Inference**  | Groq LPU Engine (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`) |
+| **Speech Engine** | Web Speech Synthesis API & Web Speech Recognition API                             |
+| **Deployment**    | Frontend on **Vercel**, Backend API on **Render**                                 |
 
-```bash
+---
+
+## 🚀 Local Development Setup
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js 18+ & npm / pnpm / yarn
+- A free [Groq Cloud API Key](https://console.groq.com/keys)
+
+---
+
+### 1. Backend Setup
+
+````bash
+# Navigate to backend directory
 cd backend
+
+# Create and activate virtual environment
 python -m venv venv
-# Windows:
-.\venv\Scripts\activate
-# Linux/macOS:
+
+# On Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+# On Linux/macOS:
 source venv/bin/activate
 
+# Install dependencies
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-```
 
-### Frontend Setup
+# Create environment configuration
+echo "GROQ_API_KEY=gsk_your_groq_api_key_here" > .env
 
-```bash
+# Run FastAPI development server
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+2. Frontend Setup
+Bash
+# Navigate to frontend directory
 cd frontend
+
+# Install dependencies
 npm install
+
+# Set local backend URL
+echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
+
+# Run Next.js development server
 npm run dev
-```
+Open http://localhost:3000 in your browser.
+
+🌐 Production Deployment Guide
+Backend on Render
+Create a new Web Service pointing to your repository root (/backend).
+
+Set Build Command: pip install -r requirements.txt
+
+Set Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+In Environment Variables, add:
+
+GROQ_API_KEY = gsk_...
+
+Frontend on Vercel
+Import repository into Vercel with the Root Directory set to frontend.
+
+In Environment Variables, add:
+
+NEXT_PUBLIC_API_URL = https://your-backend-name.onrender.com
+
+Deploy.
+
+📂 Project Structure
+Plaintext
+├── backend/
+│   ├── main.py              # FastAPI server, endpoints, streaming handlers
+│   └── requirements.txt     # Python runtime dependencies
+├── frontend/
+│   ├── app/
+│   │   ├── layout.tsx       # Root layout & font definitions
+│   │   └── page.tsx         # Dashboard UI, TTS controls, Copilot chat
+│   ├── package.json         # Frontend packages & scripts
+│   └── tsconfig.json        # Strict TypeScript rules
+└── README.md
+📄 License
+This project is open-source and available under the MIT License.
+
+
+---
+
+### Push to GitHub
+
+In your PowerShell terminal, run:
+
+```powershell
+git add README.md
+git commit -m "docs: finalize production README documentation"
+git push origin main
+````
