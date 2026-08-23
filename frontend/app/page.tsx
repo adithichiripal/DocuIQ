@@ -2,110 +2,168 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import {
-  UploadCloud,
+  Upload,
   FileText,
-  Zap,
-  CheckCircle,
-  AlertCircle,
-  Loader2,
-  Trash2,
   Volume2,
+  Pause,
+  Play,
+  Square,
   Copy,
+  Check,
   Download,
+  Trash2,
   Send,
-  Mic,
-  MicOff,
-  ShieldCheck,
+  Sparkles,
   Bot,
+  RefreshCw,
 } from "lucide-react";
 
-interface ProcessedFile {
+interface DocumentMeta {
   id: string;
-  name: string;
-  engine: string;
-  pages: number;
-  words: number;
-  size: string;
+  filename: string;
+  page_count: number;
+  word_count: number;
+  preview: string;
 }
 
 interface ChatMessage {
-  sender: "user" | "ai";
+  sender: "user" | "bot";
   text: string;
 }
 
-export default function DocuIQApp() {
-  const [docId] = useState<string>(
-    () => "doc_" + Math.random().toString(36).substring(2, 9),
-  );
-  const [uploading, setUploading] = useState(false);
-  const [processedFile, setProcessedFile] = useState<ProcessedFile | null>(
-    null,
-  );
-
-  // Summary State
-  const [granularity, setGranularity] = useState<"Short" | "Medium" | "Long">(
-    "Medium",
-  );
-  const [language, setLanguage] = useState("English");
-  const [summary, setSummary] = useState("");
-  const [summarizing, setSummarizing] = useState(false);
-
-  // Chat State
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [answering, setAnswering] = useState(false);
-  const [listening, setListening] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // Backend Health
-  const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
-
+export default function DocuIQDashboard() {
   const apiUrl =
     process.env.NEXT_PUBLIC_API_URL || "https://docuiq-backend.onrender.com";
 
-  // Check Backend Status on mount
+  // Application States
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [doc, setDoc] = useState<DocumentMeta | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [summaryLength, setSummaryLength] = useState<
+    "Short" | "Medium" | "Long"
+  >("Medium");
+  const [outputLang, setOutputLang] = useState("English");
+  const [summaryText, setSummaryText] = useState("");
+  const [isSummarizing, setIsSummarizing] = useState(false);
+
+  // Chat States
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputQuestion, setInputQuestion] = useState("");
+  const [isChatting, setIsChatting] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Text to Speech States
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Backend Health Ping
   useEffect(() => {
     let isMounted = true;
-    const checkHealth = async (retries = 3) => {
-      for (let i = 0; i < retries; i++) {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(`${apiUrl}/health`);
+        if (res.ok && isMounted) setBackendOnline(true);
+      } catch {
         try {
-          const res = await fetch(`${apiUrl}/health`);
-          if (res.ok && isMounted) {
-            setBackendOnline(true);
-            return;
-          }
+          await fetch(`${apiUrl}/health`, { mode: "no-cors" });
+          if (isMounted) setBackendOnline(true);
         } catch {
-          await new Promise((r) => setTimeout(r, 2000));
+          if (isMounted) setBackendOnline(false);
         }
       }
-      if (isMounted) setBackendOnline(false);
     };
     checkHealth();
+    const interval = setInterval(checkHealth, 30000);
     return () => {
       isMounted = false;
+      clearInterval(interval);
     };
   }, [apiUrl]);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  // Clean Markdown syntax for Speech Synthesis
+  const cleanMarkdownForSpeech = (markdown: string): string => {
+    return markdown
+      .replace(/#{1,6}\s+/g, "") // Remove headers (#, ##, ###)
+      .replace(/(\*\*|__)(.*?)\1/g, "$2") // Strip Bold
+      .replace(/(\*|_)(.*?)\1/g, "$2") // Strip Italics
+      .replace(/`{1,3}[^`]*`{1,3}/g, "") // Remove inline code
+      .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1") // Links to text
+      .replace(/^\s*[-*+]\s+/gm, "") // Bullet points
+      .replace(/^\s*\d+\.\s+/gm, "") // Numbered lists
+      .replace(/>\s+/g, "") // Blockquotes
+      .replace(/---+/g, "") // Horizontal lines
+      .replace(/\n+/g, ". ") // Newlines become vocal pauses
+      .trim();
+  };
 
-  // Upload handler
+  // Text-To-Speech Handlers
+  const handleToggleSpeech = () => {
+    if (!summaryText) return;
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      alert("Text-to-speech is not supported in this browser.");
+      return;
+    }
+
+    const synth = window.speechSynthesis;
+
+    // Pause active speech
+    if (isSpeaking && !isPaused) {
+      synth.pause();
+      setIsPaused(true);
+      return;
+    }
+
+    // Resume paused speech
+    if (isSpeaking && isPaused) {
+      synth.resume();
+      setIsPaused(false);
+      return;
+    }
+
+    // Start clean speech
+    synth.cancel();
+    const plainText = cleanMarkdownForSpeech(summaryText);
+    const utterance = new SpeechSynthesisUtterance(plainText);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      setIsPaused(false);
+    };
+
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      setIsPaused(false);
+    };
+
+    synth.speak(utterance);
+    setIsSpeaking(true);
+    setIsPaused(false);
+  };
+
+  const handleStopSpeech = () => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
+    setIsPaused(false);
+  };
+
+  // Upload Document
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || !e.target.files[0]) return;
-    const file = e.target.files[0];
-    setUploading(true);
-    setSummary("");
-    setMessages([]);
+    const file = e.target.files?.[0];
+    if (!file) return;
 
+    handleStopSpeech();
+    setIsUploading(true);
+
+    const safeName = file.name.replace(/[^a-zA-Z0-9]/g, "_");
+    const docId = `doc_${safeName}_${file.size}_${file.lastModified}`;
     const formData = new FormData();
     formData.append("file", file);
     formData.append("doc_id", docId);
-
-    const fileSizeStr =
-      file.size > 1024 * 1024
-        ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
-        : `${(file.size / 1024).toFixed(1)} KB`;
 
     try {
       const res = await fetch(`${apiUrl}/upload`, {
@@ -114,304 +172,200 @@ export default function DocuIQApp() {
       });
 
       if (!res.ok) throw new Error("Upload failed");
-      const data = await res.json();
-
-      setProcessedFile({
-        id: docId,
-        name: data.filename,
-        engine: data.filename.toLowerCase().endsWith(".pdf")
-          ? "PyMuPDF / OCR"
-          : "Tesseract OCR",
-        pages: data.page_count || 1,
-        words: data.word_count || 0,
-        size: fileSizeStr,
-      });
-
-      triggerSummary(docId, granularity, language);
-    } catch (err) {
-      console.error(err);
-      alert("Failed to process document. Please check the backend connection.");
+      const data: DocumentMeta = await res.json();
+      setDoc(data);
+      setMessages([]);
+      generateSummary(data.id, summaryLength, outputLang);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "An unexpected error occurred.";
+      alert(`Upload Error: ${message}`);
     } finally {
-      setUploading(false);
+      setIsUploading(false);
     }
   };
 
-  // Trigger Summary Stream
-  const triggerSummary = async (
-    targetDocId: string,
-    targetGranularity: string,
-    targetLang: string,
+  // Generate / Stream Summary
+  const generateSummary = async (
+    docId: string,
+    length: string,
+    lang: string,
   ) => {
-    setSummarizing(true);
-    setSummary("");
+    handleStopSpeech();
+    setIsSummarizing(true);
+    setSummaryText("");
 
     try {
       const res = await fetch(`${apiUrl}/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          doc_id: targetDocId,
-          length: targetGranularity,
-          language: targetLang,
-        }),
+        body: JSON.stringify({ doc_id: docId, length, language: lang }),
       });
 
-      if (!res.body) return;
+      if (!res.ok || !res.body) throw new Error("Summarization stream failed");
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let done = false;
+      let accumulated = "";
 
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        const chunk = decoder.decode(value, { stream: true });
-        setSummary((prev) => prev + chunk);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        accumulated += decoder.decode(value, { stream: true });
+        setSummaryText(accumulated);
       }
-    } catch (err) {
-      console.error(err);
-      setSummary("Error generating summary.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Error generating summary.";
+      setSummaryText(`[Error generating summary: ${message}]`);
     } finally {
-      setSummarizing(false);
+      setIsSummarizing(false);
     }
   };
 
-  // Copilot Message Stream
-  const handleSendMessage = async (queryText: string) => {
-    if (!queryText.trim() || !processedFile) return;
+  // Chat Ingestion & Stream
+  const handleSendChat = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!inputQuestion.trim() || !doc || isChatting) return;
 
-    setMessages((prev) => [...prev, { sender: "user", text: queryText }]);
-    setChatInput("");
-    setAnswering(true);
+    const userQ = inputQuestion.trim();
+    setInputQuestion("");
+    setMessages((prev) => [...prev, { sender: "user", text: userQ }]);
+    setIsChatting(true);
 
     try {
       const res = await fetch(`${apiUrl}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc_id: docId, question: queryText }),
+        body: JSON.stringify({ doc_id: doc.id, question: userQ }),
       });
 
-      if (!res.body) return;
+      if (!res.ok || !res.body) throw new Error("Chat stream failed");
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let done = false;
-      let aiText = "";
+      let botResponse = "";
 
-      setMessages((prev) => [...prev, { sender: "ai", text: "" }]);
+      setMessages((prev) => [...prev, { sender: "bot", text: "" }]);
 
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        const chunk = decoder.decode(value, { stream: true });
-        aiText += chunk;
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { sender: "ai", text: aiText };
-          return updated;
-        });
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        botResponse += decoder.decode(value, { stream: true });
+        setMessages((prev) => [
+          ...prev.slice(0, -1),
+          { sender: "bot", text: botResponse },
+        ]);
+        chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Error generating answer.";
+      setMessages((prev) => [
+        ...prev,
+        { sender: "bot", text: `Error: ${message}` },
+      ]);
     } finally {
-      setAnswering(false);
+      setIsChatting(false);
     }
   };
 
-  // Web Speech Recognition
-  const toggleListening = () => {
-    const windowWithSpeech = window as unknown as {
-      webkitSpeechRecognition?: new () => {
-        lang: string;
-        interimResults: boolean;
-        start: () => void;
-        stop: () => void;
-        onresult: (e: {
-          results: { 0: { 0: { transcript: string } } };
-        }) => void;
-        onerror: () => void;
-        onend: () => void;
-      };
-      SpeechRecognition?: new () => {
-        lang: string;
-        interimResults: boolean;
-        start: () => void;
-        stop: () => void;
-        onresult: (e: {
-          results: { 0: { 0: { transcript: string } } };
-        }) => void;
-        onerror: () => void;
-        onend: () => void;
-      };
-    };
-
-    const SpeechClass =
-      windowWithSpeech.SpeechRecognition ||
-      windowWithSpeech.webkitSpeechRecognition;
-    if (!SpeechClass) {
-      alert("Speech recognition is not supported in this browser.");
-      return;
-    }
-
-    const recognition = new SpeechClass();
-    recognition.lang = "en-US";
-    recognition.interimResults = false;
-
-    if (!listening) {
-      recognition.start();
-      setListening(true);
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        setChatInput(transcript);
-        handleSendMessage(transcript);
-        setListening(false);
-      };
-      recognition.onerror = () => setListening(false);
-      recognition.onend = () => setListening(false);
-    } else {
-      recognition.stop();
-      setListening(false);
-    }
+  const copyToClipboard = () => {
+    navigator.clipboard.writeText(summaryText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
-  // Text-to-Speech
-  const speakText = (text: string) => {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    window.speechSynthesis.speak(utterance);
-  };
-
-  // Export TXT
-  const downloadTXT = () => {
-    if (!summary) return;
-    const blob = new Blob([summary], { type: "text/plain;charset=utf-8" });
+  const downloadTextFile = () => {
+    const blob = new Blob([summaryText], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `DocuIQ_Summary_${docId}.txt`;
+    link.download = `${doc?.filename || "document"}_summary.txt`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="min-h-screen bg-[#06080c] text-white font-sans selection:bg-lime-500/30">
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans antialiased p-4 md:p-8">
       {/* Top Navbar */}
-      <header className="border-b border-[#131926] bg-[#090d14]/80 backdrop-blur-md px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="h-8 w-8 rounded-lg bg-lime-500/10 border border-lime-500/30 flex items-center justify-center text-lime-400">
-            <Zap className="h-4 w-4 fill-lime-400" />
+      <header className="max-w-7xl mx-auto flex items-center justify-between pb-6 border-b border-neutral-800">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-lime-400 text-neutral-950 flex items-center justify-center font-bold text-xl shadow-lg shadow-lime-500/10">
+            D
           </div>
-          <span className="text-lg font-bold tracking-tight text-white">
-            DOCU<span className="text-lime-400">IQ</span>
-          </span>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">DocuIQ</h1>
+            <p className="text-xs text-neutral-400">
+              Next-Gen Intelligence Engine
+            </p>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#111722] border border-[#1e293b] text-gray-300">
-            <ShieldCheck className="h-3.5 w-3.5 text-lime-400" />
-            <span>30-Day Encrypted Retention</span>
-          </div>
-
-          <div>
-            {backendOnline === true ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#0e2a18] text-lime-400 border border-lime-500/30">
-                <span className="h-1.5 w-1.5 rounded-full bg-lime-400 animate-pulse"></span>
-                System Ready
-              </span>
-            ) : backendOnline === false ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-950/70 text-red-400 border border-red-800/60">
-                <AlertCircle className="h-3.5 w-3.5" />
-                Backend Offline
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#1a1f2c] text-gray-400 border border-gray-800">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-lime-400" />
-                Connecting...
-              </span>
-            )}
-          </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={`w-2.5 h-2.5 rounded-full ${
+              backendOnline ? "bg-lime-400 animate-pulse" : "bg-red-500"
+            }`}
+          />
+          <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
+            {backendOnline ? "System Ready" : "Connecting..."}
+          </span>
         </div>
       </header>
 
-      {/* Main Container */}
-      <main className="max-w-6xl mx-auto px-4 py-8 space-y-8">
-        {/* Title & Badge */}
-        <div className="text-center space-y-3">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#111722] border border-[#1e293b] text-lime-400">
-            <Zap className="h-3.5 w-3.5 fill-lime-400" />
-            <span>SQLite Persistent & Streaming AI</span>
-          </div>
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white">
-            AI Document Summarizer & Voice Copilot
-          </h1>
-          <p className="text-sm text-gray-400 max-w-xl mx-auto">
-            Multi-document extraction with persistent sessions, OCR badges, and
-            instant voice interaction.
-          </p>
-        </div>
-
-        {/* Top Two Columns: Document Management & AI Summary */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left Card: Document Management */}
-          <div className="bg-[#0b0f17] border border-[#151d2a] rounded-2xl p-6 flex flex-col justify-between space-y-6">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xs font-bold tracking-wider text-gray-400 uppercase">
-                  Document Management
-                </h2>
+      {/* Main Grid */}
+      <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 mt-6">
+        {/* Left Column: Upload & Document Manager */}
+        <section className="lg:col-span-4 flex flex-col gap-6">
+          <div className="bg-neutral-900/80 border border-neutral-800 rounded-2xl p-6 shadow-xl backdrop-blur-md">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-neutral-400">
+                Document Management
+              </h2>
+              {doc && (
                 <button
                   onClick={() => {
-                    setProcessedFile(null);
-                    setSummary("");
+                    handleStopSpeech();
+                    setDoc(null);
+                    setSummaryText("");
                     setMessages([]);
                   }}
-                  className="text-xs text-gray-500 hover:text-gray-300 transition"
+                  className="text-xs text-neutral-500 hover:text-red-400 transition-colors"
                 >
                   Clear Session
                 </button>
-              </div>
+              )}
+            </div>
 
-              {/* Upload Dropzone */}
-              <div className="relative group border border-dashed border-[#222f44] hover:border-lime-500/50 rounded-xl p-8 bg-[#080c14] text-center transition-all">
-                <input
-                  type="file"
-                  accept=".pdf,image/*"
-                  onChange={handleFileUpload}
-                  disabled={uploading}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
-                />
-                <div className="flex flex-col items-center gap-2">
-                  <div className="h-10 w-10 rounded-full bg-[#121927] flex items-center justify-center text-lime-400 group-hover:scale-105 transition-transform">
-                    {uploading ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <UploadCloud className="h-5 w-5" />
-                    )}
-                  </div>
-                  <p className="text-sm font-semibold text-white">
-                    {uploading
-                      ? "Extracting & Processing..."
-                      : "Upload New Documents"}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    PDFs, Scans, Receipts, Images
-                  </p>
-                </div>
-              </div>
+            {/* Upload Box */}
+            <label className="border-2 border-dashed border-neutral-700 hover:border-lime-400/60 transition-all rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer bg-neutral-950/40 hover:bg-lime-400/5 group">
+              <Upload className="w-8 h-8 text-neutral-400 group-hover:text-lime-400 transition-colors mb-3" />
+              <span className="text-sm font-semibold text-neutral-200">
+                {isUploading
+                  ? "Processing Document..."
+                  : "Upload New Documents"}
+              </span>
+              <span className="text-xs text-neutral-500 mt-1">
+                PDFs, Images, Scans
+              </span>
+              <input
+                type="file"
+                className="hidden"
+                accept=".pdf,image/*"
+                onChange={handleFileUpload}
+                disabled={isUploading}
+              />
+            </label>
 
-              {/* Output Language Selector */}
-              <div className="flex items-center justify-between bg-[#080c14] border border-[#17202f] rounded-xl px-4 py-2.5">
-                <span className="text-xs text-gray-300 flex items-center gap-2">
-                  <span className="text-lime-400 font-bold">🌐</span> Output
-                  Language:
-                </span>
+            {/* Settings */}
+            <div className="mt-6 space-y-4">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-neutral-400">Output Language:</span>
                 <select
-                  value={language}
-                  onChange={(e) => {
-                    setLanguage(e.target.value);
-                    if (processedFile)
-                      triggerSummary(docId, granularity, e.target.value);
-                  }}
-                  className="bg-[#111722] border border-[#1e293b] text-xs text-gray-200 rounded-lg px-2.5 py-1.5 focus:border-lime-500 outline-none"
+                  value={outputLang}
+                  onChange={(e) => setOutputLang(e.target.value)}
+                  className="bg-neutral-800 border border-neutral-700 text-neutral-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-lime-400"
                 >
                   <option value="English">English</option>
                   <option value="Spanish">Spanish</option>
@@ -420,237 +374,239 @@ export default function DocuIQApp() {
                   <option value="Hindi">Hindi</option>
                 </select>
               </div>
-
-              {/* Processed Context Section */}
-              {processedFile && (
-                <div className="space-y-2 pt-2">
-                  <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    Processed Context (1)
-                  </h3>
-                  <div className="bg-[#080c14] border border-[#17202f] rounded-xl p-3 flex items-center justify-between">
-                    <div className="flex items-start gap-2.5 overflow-hidden">
-                      <FileText className="h-4 w-4 text-lime-400 shrink-0 mt-0.5" />
-                      <div className="overflow-hidden">
-                        <p className="text-xs font-medium text-gray-200 truncate">
-                          {processedFile.name}
-                        </p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className="bg-[#132819] text-lime-400 text-[10px] font-semibold px-2 py-0.5 rounded border border-lime-500/30">
-                            {processedFile.engine}
-                          </span>
-                          <span className="text-[10px] text-gray-500">
-                            {processedFile.pages} pg • {processedFile.words}{" "}
-                            words • {processedFile.size}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setProcessedFile(null)}
-                      className="text-gray-500 hover:text-red-400 p-1 transition"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
 
-            {/* Lime Regenerate Button */}
-            <button
-              onClick={() =>
-                processedFile && triggerSummary(docId, granularity, language)
-              }
-              disabled={!processedFile || summarizing}
-              className="w-full bg-[#84cc16] hover:bg-[#65a30d] disabled:opacity-40 disabled:hover:bg-[#84cc16] text-black font-semibold text-xs py-3 rounded-xl flex items-center justify-center gap-2 transition shadow-md shadow-lime-950/40"
-            >
-              <CheckCircle className="h-4 w-4" />
-              {summarizing ? "Generating Summary..." : "Regenerate Summary"}
-            </button>
-          </div>
-
-          {/* Right Card: AI Intelligence Summary */}
-          <div className="bg-[#0b0f17] border border-[#151d2a] rounded-2xl p-6 flex flex-col justify-between space-y-4">
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xs font-bold tracking-wider text-gray-400 uppercase">
-                  AI Intelligence Summary
-                </h2>
-
-                {/* Granularity Pills */}
-                <div className="flex bg-[#080c14] p-1 rounded-lg border border-[#17202f]">
-                  {(["Short", "Medium", "Long"] as const).map((lvl) => (
-                    <button
-                      key={lvl}
-                      onClick={() => {
-                        setGranularity(lvl);
-                        if (processedFile) triggerSummary(docId, lvl, language);
-                      }}
-                      className={`px-3 py-1 text-xs font-semibold rounded-md transition ${
-                        granularity === lvl
-                          ? "bg-[#84cc16] text-black shadow-sm"
-                          : "text-gray-400 hover:text-white"
-                      }`}
-                    >
-                      {lvl}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Summary Content Body */}
-              <div className="bg-[#080c14] border border-[#17202f] rounded-xl p-4 min-h-[260px] max-h-[300px] overflow-y-auto text-xs text-gray-300 leading-relaxed font-sans">
-                {summarizing && !summary && (
-                  <div className="flex items-center gap-2 text-gray-500 pt-6">
-                    <Loader2 className="h-4 w-4 animate-spin text-lime-400" />
-                    Synthesizing tokens from extracted context...
-                  </div>
-                )}
-                {summary ? (
-                  <div className="whitespace-pre-wrap">{summary}</div>
-                ) : (
-                  !summarizing && (
-                    <div className="flex flex-col items-center justify-center h-48 text-gray-600">
-                      <p>
-                        Upload a document and select granularity to generate
-                        summary.
+            {/* Processed Context Card */}
+            {doc && (
+              <div className="mt-6 pt-6 border-t border-neutral-800">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-400 mb-3">
+                  Processed Context
+                </h3>
+                <div className="bg-neutral-950/70 border border-neutral-800 rounded-xl p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <FileText className="w-6 h-6 text-lime-400 shrink-0" />
+                    <div className="truncate">
+                      <p className="text-xs font-medium text-neutral-200 truncate">
+                        {doc.filename}
+                      </p>
+                      <p className="text-[10px] text-neutral-500">
+                        {doc.page_count} pg • {doc.word_count} words
                       </p>
                     </div>
-                  )
-                )}
-              </div>
-            </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      handleStopSpeech();
+                      setDoc(null);
+                    }}
+                    className="text-neutral-500 hover:text-red-400 p-1.5"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
 
-            {/* Action Bar (PDF, TXT, Listen, Copy) */}
-            <div className="flex items-center justify-between pt-2">
-              <div className="flex gap-2">
                 <button
-                  onClick={downloadTXT}
-                  disabled={!summary}
-                  className="bg-[#111722] hover:bg-[#162030] disabled:opacity-40 text-gray-300 text-xs px-3 py-1.5 rounded-lg border border-[#1e293b] flex items-center gap-1.5 transition"
+                  onClick={() =>
+                    generateSummary(doc.id, summaryLength, outputLang)
+                  }
+                  disabled={isSummarizing}
+                  className="w-full mt-4 bg-lime-400 hover:bg-lime-300 text-neutral-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
                 >
-                  <Download className="h-3 w-3 text-red-400" /> PDF
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${isSummarizing ? "animate-spin" : ""}`}
+                  />
+                  Regenerate Summary
                 </button>
-                <button
-                  onClick={downloadTXT}
-                  disabled={!summary}
-                  className="bg-[#111722] hover:bg-[#162030] disabled:opacity-40 text-gray-300 text-xs px-3 py-1.5 rounded-lg border border-[#1e293b] flex items-center gap-1.5 transition"
-                >
-                  <Download className="h-3 w-3 text-blue-400" /> TXT
-                </button>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={() => speakText(summary)}
-                  disabled={!summary}
-                  className="bg-[#111722] hover:bg-[#162030] disabled:opacity-40 text-gray-300 text-xs px-3 py-1.5 rounded-lg border border-[#1e293b] flex items-center gap-1.5 transition"
-                >
-                  <Volume2 className="h-3 w-3 text-lime-400" /> Listen
-                </button>
-                <button
-                  onClick={() => {
-                    if (summary) {
-                      navigator.clipboard.writeText(summary);
-                      alert("Summary copied to clipboard!");
-                    }
-                  }}
-                  disabled={!summary}
-                  className="bg-[#111722] hover:bg-[#162030] disabled:opacity-40 text-gray-300 text-xs px-3 py-1.5 rounded-lg border border-[#1e293b] flex items-center gap-1.5 transition"
-                >
-                  <Copy className="h-3 w-3" /> Copy
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Full-Width Bottom Card: Voice & Text Copilot */}
-        <div className="bg-[#0b0f17] border border-[#151d2a] rounded-2xl p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-[#17202f] pb-3">
-            <div className="flex items-center gap-2">
-              <Bot className="h-4 w-4 text-lime-400" />
-              <h2 className="text-sm font-bold text-white">
-                Voice & Text Copilot
-              </h2>
-            </div>
-            <span className="text-[11px] font-medium bg-[#111722] border border-[#1e293b] text-gray-400 px-2.5 py-0.5 rounded-full">
-              Grounded Q&A
-            </span>
-          </div>
-
-          {/* Chat Messages */}
-          <div className="bg-[#080c14] border border-[#17202f] rounded-xl p-4 min-h-[160px] max-h-[220px] overflow-y-auto space-y-3">
-            {messages.length === 0 && (
-              <div className="h-28 flex flex-col items-center justify-center text-gray-600 text-xs gap-1">
-                <span className="text-base text-gray-500">✨</span>
-                <p>Upload a document and ask questions about its contents.</p>
               </div>
             )}
-            {messages.map((m, idx) => (
-              <div
-                key={idx}
-                className={`flex flex-col ${m.sender === "user" ? "items-end" : "items-start"}`}
-              >
-                <div
-                  className={`max-w-[80%] text-xs p-3 rounded-xl ${
-                    m.sender === "user"
-                      ? "bg-[#84cc16] text-black font-medium"
-                      : "bg-[#111722] border border-[#1e293b] text-gray-200"
+          </div>
+        </section>
+
+        {/* Right Column: AI Summary & Copilot Chat */}
+        <section className="lg:col-span-8 flex flex-col gap-6">
+          {/* Summary Card */}
+          <div className="bg-neutral-900/80 border border-neutral-800 rounded-2xl p-6 shadow-xl backdrop-blur-md flex flex-col h-[400px]">
+            <div className="flex items-center justify-between pb-4 border-b border-neutral-800">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-lime-400" />
+                <h2 className="text-xs font-bold uppercase tracking-wider text-neutral-300">
+                  AI Intelligence Summary
+                </h2>
+              </div>
+
+              {/* Length Selector */}
+              <div className="flex items-center bg-neutral-950 border border-neutral-800 rounded-lg p-1">
+                {(["Short", "Medium", "Long"] as const).map((len) => (
+                  <button
+                    key={len}
+                    onClick={() => {
+                      setSummaryLength(len);
+                      if (doc) generateSummary(doc.id, len, outputLang);
+                    }}
+                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                      summaryLength === len
+                        ? "bg-lime-400 text-neutral-950"
+                        : "text-neutral-400 hover:text-neutral-200"
+                    }`}
+                  >
+                    {len}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Scrollable Summary Viewport */}
+            <div className="flex-1 overflow-y-auto py-4 text-sm text-neutral-300 leading-relaxed font-sans whitespace-pre-wrap">
+              {summaryText ? (
+                summaryText
+              ) : (
+                <div className="h-full flex items-center justify-center text-neutral-600 text-xs">
+                  Upload a document to extract structured intelligence.
+                </div>
+              )}
+            </div>
+
+            {/* Action Bar & TTS Controls */}
+            <div className="pt-4 border-t border-neutral-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={downloadTextFile}
+                  disabled={!summaryText}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors disabled:opacity-50"
+                >
+                  <Download className="w-3.5 h-3.5" /> TXT
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Speech Synthesis Play/Pause */}
+                <button
+                  onClick={handleToggleSpeech}
+                  disabled={!summaryText}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${
+                    isSpeaking && !isPaused
+                      ? "bg-lime-400/20 border-lime-400/50 text-lime-300"
+                      : isSpeaking && isPaused
+                        ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                        : "bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-300"
                   }`}
                 >
-                  {m.text}
-                </div>
+                  {!isSpeaking ? (
+                    <>
+                      <Volume2 className="w-3.5 h-3.5" /> Listen
+                    </>
+                  ) : isPaused ? (
+                    <>
+                      <Play className="w-3.5 h-3.5" /> Resume
+                    </>
+                  ) : (
+                    <>
+                      <Pause className="w-3.5 h-3.5" /> Pause
+                    </>
+                  )}
+                </button>
+
+                {/* Stop Speech Button */}
+                {isSpeaking && (
+                  <button
+                    onClick={handleStopSpeech}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30 transition-colors"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" /> Stop
+                  </button>
+                )}
+
+                {/* Copy Button */}
+                <button
+                  onClick={copyToClipboard}
+                  disabled={!summaryText}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors disabled:opacity-50"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-lime-400" /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" /> Copy
+                    </>
+                  )}
+                </button>
               </div>
-            ))}
-            <div ref={chatEndRef} />
+            </div>
           </div>
 
-          {/* Voice Input & Query Bar */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleListening}
-              className={`p-3 rounded-xl border border-[#1e293b] transition ${
-                listening
-                  ? "bg-red-500/20 text-red-400 border-red-500/40 animate-pulse"
-                  : "bg-[#111722] hover:bg-[#162030] text-gray-400 hover:text-white"
-              }`}
-              title={listening ? "Listening..." : "Dictate with microphone"}
-            >
-              {listening ? (
-                <MicOff className="h-4 w-4" />
+          {/* Grounded Copilot Chat */}
+          <div className="bg-neutral-900/80 border border-neutral-800 rounded-2xl p-6 shadow-xl backdrop-blur-md flex flex-col h-[380px]">
+            <div className="flex items-center gap-2 pb-4 border-b border-neutral-800">
+              <Bot className="w-4 h-4 text-lime-400" />
+              <h2 className="text-xs font-bold uppercase tracking-wider text-neutral-300">
+                Grounded Document Copilot
+              </h2>
+            </div>
+
+            {/* Chat Thread */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-3">
+              {messages.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-neutral-600 text-xs">
+                  Ask targeted questions strictly verified against your uploaded
+                  document.
+                </div>
               ) : (
-                <Mic className="h-4 w-4" />
+                messages.map((m, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex items-start gap-3 text-xs ${
+                      m.sender === "user" ? "justify-end" : "justify-start"
+                    }`}
+                  >
+                    {m.sender === "bot" && (
+                      <div className="w-6 h-6 rounded-full bg-lime-400 text-neutral-950 flex items-center justify-center font-bold text-[10px] shrink-0">
+                        AI
+                      </div>
+                    )}
+                    <div
+                      className={`max-w-[80%] rounded-xl px-4 py-2.5 leading-relaxed ${
+                        m.sender === "user"
+                          ? "bg-neutral-800 text-neutral-200"
+                          : "bg-neutral-950 border border-neutral-800 text-neutral-300"
+                      }`}
+                    >
+                      {m.text}
+                    </div>
+                  </div>
+                ))
               )}
-            </button>
+              <div ref={chatEndRef} />
+            </div>
 
-            <input
-              type="text"
-              placeholder={
-                processedFile
-                  ? "Ask a question about your documents..."
-                  : "Upload a document first to chat..."
-              }
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) =>
-                e.key === "Enter" && handleSendMessage(chatInput)
-              }
-              disabled={!processedFile || answering}
-              className="flex-1 bg-[#080c14] border border-[#17202f] rounded-xl px-4 py-3 text-xs text-white placeholder-gray-600 outline-none focus:border-lime-500 transition"
-            />
-
-            <button
-              type="button"
-              onClick={() => handleSendMessage(chatInput)}
-              disabled={!processedFile || answering || !chatInput.trim()}
-              className="bg-[#84cc16] hover:bg-[#65a30d] disabled:opacity-40 text-black p-3 rounded-xl transition shadow-md shadow-lime-950/40"
+            {/* Input Form */}
+            <form
+              onSubmit={handleSendChat}
+              className="pt-3 border-t border-neutral-800 flex gap-2"
             >
-              <Send className="h-4 w-4" />
-            </button>
+              <input
+                type="text"
+                value={inputQuestion}
+                onChange={(e) => setInputQuestion(e.target.value)}
+                placeholder={
+                  doc
+                    ? "Ask a question about this document..."
+                    : "Upload a file to chat"
+                }
+                disabled={!doc || isChatting}
+                className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-2 text-xs text-neutral-200 focus:outline-none focus:border-lime-400 disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={!doc || !inputQuestion.trim() || isChatting}
+                className="bg-lime-400 hover:bg-lime-300 text-neutral-950 px-4 py-2 rounded-xl text-xs font-semibold flex items-center justify-center transition-colors disabled:opacity-50"
+              >
+                <Send className="w-3.5 h-3.5" />
+              </button>
+            </form>
           </div>
-        </div>
+        </section>
       </main>
     </div>
   );

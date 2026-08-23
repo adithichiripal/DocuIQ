@@ -44,7 +44,7 @@ def init_db():
 
 init_db()
 
-def extract_pdf_text(file_bytes: bytes, max_pages: int = 30) -> tuple[str, int]:
+def extract_pdf_text(file_bytes: bytes, max_pages: int = 35) -> tuple[str, int]:
     text_chunks = []
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
         total_pages = min(len(doc), max_pages)
@@ -55,9 +55,9 @@ def extract_pdf_text(file_bytes: bytes, max_pages: int = 30) -> tuple[str, int]:
                 text_chunks.append(f"--- Page {page_idx + 1} ---\n{text}")
                 
     extracted = "\n\n".join(text_chunks)
-    return (extracted if extracted else "Visual document context."), total_pages
+    return (extracted if extracted else "Visual document content."), total_pages
 
-def budget_tokens(text: str, max_chars: int = 30000) -> str:
+def budget_tokens(text: str, max_chars: int = 35000) -> str:
     if len(text) > max_chars:
         half = max_chars // 2
         return text[:half] + "\n\n[... truncated ...]\n\n" + text[-half:]
@@ -77,7 +77,7 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
         if filename.lower().endswith(".pdf"):
             extracted_text, total_pages = extract_pdf_text(content)
         else:
-            extracted_text = f"Uploaded visual document ({filename})."
+            extracted_text = f"Uploaded visual image document: {filename}."
             total_pages = 1
             
         word_count = len(extracted_text.split())
@@ -122,7 +122,7 @@ async def summarize_document(req: SummarizeRequest):
     You are DocuIQ, an expert document analyst.
     Summarize the following document in {req.language}.
     Summary Length/Style: {req.length}.
-    Use clean Markdown formatting with bullet points and bold key terms.
+    Use clean Markdown formatting with clear bullet points and bold key terms.
     
     DOCUMENT CONTENT:
     {doc_text}
@@ -140,7 +140,7 @@ async def summarize_document(req: SummarizeRequest):
                 return
             except Exception:
                 continue
-        yield "\n[Error: Rate limit or key validation failed. Please verify API key permissions on Google AI Studio.]"
+        yield "\n[Error: Rate limit reached. Please verify quota on Google AI Studio.]"
 
     return StreamingResponse(generate_stream(), media_type="text/plain")
 
@@ -184,6 +184,6 @@ async def chat_document(req: ChatRequest):
                 return
             except Exception:
                 continue
-        yield "\n[Error: Unable to generate answer.]"
+        yield "\n[Error: Unable to generate response.]"
 
     return StreamingResponse(generate_chat_stream(), media_type="text/plain")
