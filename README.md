@@ -6,7 +6,7 @@ DocuIQ is an end-to-end full-stack AI platform engineered to ingest complex docu
 
 ## 1. Project Deliverables
 
-- **Live Application URL**: [https://frontend-pink-xi-64.vercel.app](https://frontend-pink-xi-64.vercel.app)
+- **Live Application URL**: (https://frontend-seven-mauve-78.vercel.app)
 - **Backend API Documentation (Swagger)**: [https://docuiq-backend.onrender.com/docs](https://docuiq-backend.onrender.com/docs)
 - **Source Code Repository**: [https://github.com/adithichiripal/DocuIQ](https://github.com/adithichiripal/DocuIQ)
 
