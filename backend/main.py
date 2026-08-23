@@ -11,13 +11,15 @@ import google.generativeai as genai
 from PIL import Image
 from pydantic import BaseModel
 
+# Read API Key from environment (configured in Render Dashboard or local .env)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Production model fallback chain to bypass free-tier rate limits
+# Model fallback chain for instant responses and rate-limit mitigation
 MODEL_CANDIDATES = [
-    "gemini-2.5-flash",
+    "models/gemini-2.5-flash",
+    "models/gemini-1.5-flash",
     "gemini-1.5-flash",
     "gemini-2.0-flash",
     "gemini-3.6-flash",
@@ -33,6 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Persistent database storage in temporary system space
 DB_FILE = os.path.join(tempfile.gettempdir(), "docuiq.db")
 
 def init_db():
@@ -53,8 +56,7 @@ def init_db():
 
 init_db()
 
-# Fast Native PDF Text Extractor (0.1 seconds execution time)
-def extract_pdf_text(file_bytes: bytes, max_pages: int = 30) -> tuple[str, int]:
+def extract_pdf_text(file_bytes: bytes, max_pages: int = 40) -> tuple[str, int]:
     text_chunks = []
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
         total_pages = min(len(doc), max_pages)
@@ -67,10 +69,10 @@ def extract_pdf_text(file_bytes: bytes, max_pages: int = 30) -> tuple[str, int]:
     extracted = "\n\n".join(text_chunks)
     return (extracted if extracted else "Scanned document with visual data."), total_pages
 
-def budget_tokens(text: str, max_chars: int = 30000) -> str:
+def budget_tokens(text: str, max_chars: int = 35000) -> str:
     if len(text) > max_chars:
         half = max_chars // 2
-        return text[:half] + "\n\n[... truncated for rapid processing ...]\n\n" + text[-half:]
+        return text[:half] + "\n\n[... truncated for rapid streaming ...]\n\n" + text[-half:]
     return text
 
 @app.get("/")
@@ -87,7 +89,7 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
         if filename.lower().endswith(".pdf"):
             extracted_text, total_pages = extract_pdf_text(content)
         else:
-            # Fast in-memory preview for images
+            # Fast in-memory preview for images to eliminate CPU OCR latency
             img = Image.open(io.BytesIO(content))
             extracted_text = f"Visual Image Document ({filename}, {img.width}x{img.height}px)."
             total_pages = 1
@@ -149,10 +151,9 @@ async def summarize_document(req: SummarizeRequest):
                     if chunk.text:
                         yield chunk.text
                 return
-            except Exception as e:
-                # If rate limited (429) or model missing, try the next candidate
+            except Exception:
                 continue
-        yield "\n[Error: All available Gemini model quotas are temporarily exhausted. Please retry in a few moments or provide a fresh API key.]"
+        yield "\n[Error: Model quota exceeded or service temporarily unavailable. Please retry in a moment.]"
 
     return StreamingResponse(generate_stream(), media_type="text/plain")
 
@@ -195,6 +196,6 @@ async def chat_document(req: ChatRequest):
                 return
             except Exception:
                 continue
-        yield "\n[Error: Model quota exceeded. Please retry in a moment.]"
+        yield "\n[Error: Unable to generate response. Please try again.]"
 
     return StreamingResponse(generate_chat_stream(), media_type="text/plain")
