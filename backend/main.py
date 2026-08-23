@@ -17,7 +17,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Set Tesseract binary path for Linux containers if available
+# Set Tesseract binary path for Linux containers
 if os.path.exists("/usr/bin/tesseract"):
     pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
@@ -31,7 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Use system temp directory for SQLite database
 DB_FILE = os.path.join(tempfile.gettempdir(), "docuiq.db")
 
 def init_db():
@@ -51,6 +50,23 @@ def init_db():
     conn.close()
 
 init_db()
+
+def get_gemini_model():
+    """Dynamically finds whatever model your Gemini API key has access to."""
+    try:
+        available = [
+            m.name for m in genai.list_models()
+            if "generateContent" in m.supported_generation_methods
+        ]
+        for pref in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+            for name in available:
+                if pref in name:
+                    return genai.GenerativeModel(name)
+        if available:
+            return genai.GenerativeModel(available[0])
+    except Exception as e:
+        print(f"Discovery error: {e}")
+    return genai.GenerativeModel("models/gemini-1.5-flash")
 
 def process_image_ocr(image_bytes: bytes) -> str:
     try:
@@ -130,7 +146,6 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
             "preview": extracted_text[:500]
         }
     except Exception as e:
-        print(f"[Upload Route Error]: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 class SummarizeRequest(BaseModel):
@@ -162,22 +177,13 @@ async def summarize_document(req: SummarizeRequest):
     
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
-            # Using stable model alias supported across all API key tiers
-            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            model = get_gemini_model()
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
                 if chunk.text:
                     yield chunk.text
-        except Exception:
-            try:
-                # Fallback model
-                model = genai.GenerativeModel("gemini-pro")
-                response = model.generate_content(prompt, stream=True)
-                for chunk in response:
-                    if chunk.text:
-                        yield chunk.text
-            except Exception as final_err:
-                yield f"\n[Streaming Error: {str(final_err)}]"
+        except Exception as err:
+            yield f"\n[Streaming Error: {str(err)}]"
 
     return StreamingResponse(generate_stream(), media_type="text/plain")
 
@@ -211,19 +217,12 @@ async def chat_document(req: ChatRequest):
     
     async def generate_chat_stream() -> AsyncGenerator[str, None]:
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            model = get_gemini_model()
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
                 if chunk.text:
                     yield chunk.text
-        except Exception:
-            try:
-                model = genai.GenerativeModel("gemini-pro")
-                response = model.generate_content(prompt, stream=True)
-                for chunk in response:
-                    if chunk.text:
-                        yield chunk.text
-            except Exception as final_err:
-                yield f"\n[Error: {str(final_err)}]"
+        except Exception as err:
+            yield f"\n[Error: {str(err)}]"
 
     return StreamingResponse(generate_chat_stream(), media_type="text/plain")
