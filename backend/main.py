@@ -11,17 +11,18 @@ from PIL import Image
 import pytesseract
 from pydantic import BaseModel
 
-# Initialize Gemini
+# Initialize Gemini SDK
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI(title="DocuIQ Backend", version="2.0.0")
 
+# Allow all origins, methods, and headers for Vercel integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -78,6 +79,7 @@ def budget_tokens(text: str, max_chars: int = 35000) -> str:
         return text[:half] + "\n\n[... truncated for rapid streaming ...]\n\n" + text[-half:]
     return text
 
+# Dedicated Health Check Endpoints
 @app.get("/")
 @app.get("/health")
 def health_check():
