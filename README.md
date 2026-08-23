@@ -1,87 +1,69 @@
-# 📄 DocuIQ — Next-Gen Document Intelligence & Voice Copilot
+# DocuIQ — Intelligent Multimodal Document Assistant
 
-DocuIQ is an enterprise-grade document intelligence platform designed to ingest multi-format documents (PDFs, images, scanned receipts), extract textual data using native parsers with OCR fallback, and stream structured AI summaries in multiple languages. It also provides a grounded, interactive voice and text copilot powered by Google Gemini.
-
----
-
-## 🏗️ System Architecture
-
-+---------------------------+
-| Next.js 14 + TailwindCSS |
-| (Voice & Markdown UI) |
-+-------------+-------------+
-|
-REST API / Token Streams (Fetch API)
-|
-v
-+---------------------------+
-| FastAPI Async Server |
-+-------------+-------------+
-|
-+--------------------------+--------------------------+
-| | |
-v v v
-+-----------------------+ +-----------------------+ +-----------------------+
-| PyPDF & Tesseract | | SQLite (SQLAlchemy) | | Google Gemini API |
-| (OCR Engine) | | (Persistent Store) | | (gemini-3.6-flash) |
-+-----------------------+ +-----------------------+ +-----------------------+
+DocuIQ is an end-to-end full-stack AI platform engineered to ingest complex documents (PDFs, scans, receipts), extract textual and visual content via OCR, stream multi-level summaries in real time, and support grounded conversational voice Q&A.
 
 ---
 
-## ✨ Key Features
+## 1. Project Deliverables
 
-- **Multi-Document Ingestion**: Upload native text PDFs, scanned documents, invoices, receipts, and images.
-- **OCR Engine with Metadata Badges**: Automatically detects document type, displays page counts, word counts, and extraction methods (`Native PDF`, `Tesseract OCR`, `Plain Text`).
-- **Low-Latency Streaming Summaries**: Real-time Markdown token streaming powered by `gemini-3.6-flash`.
-- **Multilingual Synthesis**: Instantly translate executive summaries into 10+ target languages (English, Spanish, Hindi, French, German, Japanese, etc.).
-- **Voice-Interactive Copilot**: Speech-to-Text input and grounded Text-to-Speech audio playback answering queries strictly from document context.
-- **Export Capabilities**: One-click download of generated intelligence reports as formatted **PDF** and **TXT** files.
-- **Session Persistence**: Relational SQLite storage retains document context, summaries, and chat history across page refreshes.
+- **Live Application URL**: [https://frontend-pink-xi-64.vercel.app](https://frontend-pink-xi-64.vercel.app)
+- **Backend API Documentation (Swagger)**: [https://docuiq-backend.onrender.com/docs](https://docuiq-backend.onrender.com/docs)
+- **Source Code Repository**: [https://github.com/adithichiripal/DocuIQ](https://github.com/adithichiripal/DocuIQ)
 
 ---
 
-## 🛠️ Tech Stack
+## 2. Approach & Technical Architecture
 
-- **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, Lucide Icons, React Markdown, jsPDF.
-- **Backend**: FastAPI, Uvicorn, Pydantic, Python-Multipart.
-- **OCR & Document Processing**: PyPDF, Tesseract OCR (`pytesseract`), Pillow (`PIL`).
-- **AI Model**: Google Gemini API (`google-genai` SDK, `gemini-3.6-flash`).
-- **Database**: SQLite with SQLAlchemy ORM.
+DocuIQ is built as a decoupled, cloud-native monorepo separating a high-performance FastAPI backend from a Next.js frontend:
 
----
-
-## 🚀 Local Setup & Installation
-
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+
-- [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) installed on your system.
-- Google AI Studio API Key.
+- **Dual Ingestion & OCR**: Native digital text is parsed via PyMuPDF (`fitz`), while scanned imagery and flattened pages fall back to Tesseract OCR with OpenCV image preprocessing.
+- **Real-Time Streaming Intelligence**: Powered by Google Gemini via chunked streaming HTTP responses, delivering multi-granularity (Quick, Detailed, Action Items) and multi-lingual summaries with low perceived latency.
+- **Strictly Grounded Voice Copilot**: Context-aware Q&A constrained strictly to extracted text to prevent hallucinations, enhanced with the Web Speech API and client-side Text-to-Speech (TTS).
+- **State Persistence & Cloud Hosting**: Document metadata, OCR results, and chat history persist in an SQLite/SQLAlchemy layer. The backend is containerized with Docker on Render, while the frontend is deployed to Vercel's Edge network.
 
 ---
 
-### 1. Backend Setup
+## 3. System Architecture
+
+```mermaid
+graph TD
+    A[Next.js 14 + Tailwind CSS<br/>(Voice & Markdown UI)] -->|REST API / Token Streams| B[FastAPI Async Server]
+    B --> C[PyPDF & Tesseract OCR<br/>(Ingestion Engine)]
+    B --> D[Google Gemini API<br/>(Summarization & Copilot)]
+    B --> E[SQLite / SQLAlchemy<br/>(Persistent Session Store)]
+```
+
+---
+
+## 4. Tech Stack
+
+- **Frontend**: Next.js 14/15 (App Router), React, Tailwind CSS, Lucide Icons, Web Speech API
+- **Backend**: FastAPI, Uvicorn, PyMuPDF, Pytesseract, SQLite, SQLAlchemy, Docker
+- **AI Model**: Google Gemini Pro SDK
+- **Cloud Infrastructure**: Vercel (Frontend), Render (Containerized Backend)
+
+---
+
+## 5. Local Setup & Execution
+
+### Backend Setup
 
 ```bash
-# Navigate to backend directory
 cd backend
-
-# Create virtual environment
 python -m venv venv
-
-# Activate virtual environment
-# Windows (PowerShell):
-.\venv\Scripts\Activate.ps1
-# macOS/Linux:
+# Windows:
+.\venv\Scripts\activate
+# Linux/macOS:
 source venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
 
-# Create .env file with your Gemini API key
-echo GEMINI_API_KEY="your_actual_gemini_api_key" > .env
+### Frontend Setup
 
-# Run FastAPI Server
-python main.py
+```bash
+cd frontend
+npm install
+npm run dev
 ```
