@@ -129,6 +129,19 @@ This keeps sensitive API keys on the server side and provides a clean separation
 | **Deployment** | Frontend on **Vercel**, Backend API on **Render** |
 # 📂 Project Structure
 
+
+## 🔮 Scope for Future Development & Roadmap
+
+DocuIQ is architected for modular expansion. Future iterations will focus on scaling vector retrieval, multi-modal ingestion, and collaborative workflows:
+
+* **Vector Search & Hybrid RAG**: Integrate dense vector indexing (e.g., ChromaDB, Pinecone, or pgvector) alongside BM25 hybrid search to enable high-accuracy semantic retrieval over 100+ page documents.
+* **Multi-Document Ingestion & Cross-Referencing**: Support batch uploads allowing users to compare, contrast, and synthesize data across multiple PDFs and spreadsheets concurrently.
+* **Granular Source Grounding & Citations**: Implement clickable in-line citations that highlight and jump directly to the exact page, paragraph, or bounding box within the document viewer.
+* **Export & Integrations Ecosystem**: Direct one-click exports of summaries and extracted tables into Markdown, Notion, Google Docs, and formatted PDF reports.
+* **Structured Data & Table Extraction**: Add specialized parsing pipelines for financial sheets, receipts, and invoices into structured JSON, CSV, and Excel formats.
+* **Role-Based Collaboration & Workspace Sharing**: Multi-user workspaces with authentication (Clerk / NextAuth) and role-based access control (RBAC) for team research.
+* **Edge On-Device Inference**: Implement WebGPU-based client-side fallback inference for complete offline privacy on sensitive files.
+
 ```text
 plaintext/
 │
