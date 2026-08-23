@@ -1,31 +1,25 @@
 import io
 import os
-import uuid
-from datetime import datetime
-from typing import List, Optional
-from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+import sqlite3
+from typing import AsyncGenerator
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+import fitz  # PyMuPDF
+import google.generativeai as genai
+import numpy as np
 from PIL import Image
-import pypdf
 import pytesseract
-from google import genai
-from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
-from database import SessionModel, get_db
+# --- Gemini Configuration ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-if os.path.exists(r"C:\Program Files\Tesseract-OCR\tesseract.exe"):
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+app = FastAPI(title="DocuIQ Backend", version="2.0.0")
 
-load_dotenv()
-
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
-
-app = FastAPI(title="DOCUIQ Backend - Persistent Database")
-
+# --- CORS Configuration ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,228 +28,206 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- SQLite Persistent Storage Setup ---
+DB_FILE = "docuiq.db"
 
-def extract_pdf_data(file_bytes: bytes):
-    extracted_text = ""
-    page_count = 0
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            filename TEXT,
+            extracted_text TEXT,
+            summary TEXT,
+            word_count INTEGER,
+            page_count INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id TEXT,
+            sender TEXT,
+            message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- Memory-Safe & High-Speed Ingestion Helpers ---
+
+def process_image_ocr(image_bytes: bytes) -> str:
+    """Downscales image to max 1600px width and runs optimized OCR."""
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    
+    # Downscale high-resolution phone captures to prevent RAM spikes
+    if img.width > 1600:
+        ratio = 1600 / img.width
+        img = img.resize((1600, int(img.height * ratio)), Image.Resampling.LANCZOS)
+        
+    return pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+
+def process_pdf_stream(file_bytes: bytes, max_pages: int = 50) -> tuple[str, int]:
+    """
+    Streams PDF page-by-page. Extracts digital text instantly (<5ms/page),
+    and only runs low-DPI OCR on blank/scanned pages.
+    """
+    text_chunks = []
+    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        total_pages = min(len(doc), max_pages)
+        for page_idx in range(total_pages):
+            page = doc[page_idx]
+            page_text = page.get_text().strip()
+            
+            # Scanned fallback: OCR only if digital text is empty
+            if not page_text or len(page_text) < 30:
+                pix = page.get_pixmap(dpi=150)  # 150 DPI is 4x faster and uses 75% less RAM than 300 DPI
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                if img.width > 1600:
+                    img = img.resize((1600, int(img.height * (1600 / img.width))), Image.Resampling.LANCZOS)
+                page_text = pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+                
+            if page_text:
+                text_chunks.append(f"--- Page {page_idx + 1} ---\n{page_text}")
+                
+    return "\n\n".join(text_chunks), total_pages
+
+def budget_tokens(text: str, max_chars: int = 35000) -> str:
+    """Budgets text length so Gemini can stream the first token in under 1 second."""
+    if len(text) > max_chars:
+        half = max_chars // 2
+        return text[:half] + "\n\n[... content truncated for rapid processing ...]\n\n" + text[-half:]
+    return text
+
+# --- API Endpoints ---
+
+@app.get("/")
+@app.get("/health")
+def health_check():
+    return {"status": "online", "service": "DocuIQ Backend API"}
+
+@app.post("/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    doc_id: str = Form(...)
+):
     try:
-        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-        page_count = len(reader.pages)
-        for page_idx, page in enumerate(reader.pages):
-            page_text = page.extract_text()
-            if page_text and page_text.strip():
-                extracted_text += f"\n--- Page {page_idx + 1} ---\n" + page_text
+        content = await file.read()
+        filename = file.filename or "document"
+        
+        # Ingest based on file type
+        if filename.lower().endswith(".pdf"):
+            extracted_text, total_pages = process_pdf_stream(content)
+        else:
+            extracted_text = process_image_ocr(content)
+            total_pages = 1
+            
+        word_count = len(extracted_text.split())
+        
+        # Save to SQLite
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO documents (id, filename, extracted_text, word_count, page_count) VALUES (?, ?, ?, ?, ?)",
+            (doc_id, filename, extracted_text, word_count, total_pages)
+        )
+        conn.commit()
+        conn.close()
+        
+        return {
+            "id": doc_id,
+            "filename": filename,
+            "page_count": total_pages,
+            "word_count": word_count,
+            "preview": extracted_text[:500]
+        }
     except Exception as e:
-        print(f"PDF extraction error: {e}")
-    return extracted_text.strip(), max(page_count, 1)
-
-
-def extract_image_data(file_bytes: bytes):
-    try:
-        image = Image.open(io.BytesIO(file_bytes))
-        text = pytesseract.image_to_string(image, config="--psm 6")
-        return text.strip(), 1
-    except Exception as e:
-        print(f"OCR Error: {e}")
-        return "", 1
-
-
-class ChatRequest(BaseModel):
-    session_id: str
-    message: str
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 class SummarizeRequest(BaseModel):
-    session_id: str
-    summary_length: str = "medium"
-    target_language: str = "English"
+    doc_id: str
+    length: str = "Medium"  # Short, Medium, Long, Action Items
+    language: str = "English"
 
-
-class DeleteDocRequest(BaseModel):
-    session_id: str
-    filename: str
-
-
-@app.get("/api/sessions/{session_id}")
-async def get_session_data(session_id: str, db: Session = Depends(get_db)):
-    """Fetch existing session data on page reload"""
-    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {
-        "session_id": session.id,
-        "documents": session.get_documents(),
-        "summary": session.get_summary(),
-        "chat_history": session.get_chat_history()
-    }
-
-
-@app.post("/api/upload")
-async def upload_documents(
-    files: List[UploadFile] = File(...),
-    session_id: Optional[str] = Form(None),
-    db: Session = Depends(get_db)
-):
-    current_session_id = session_id or str(uuid.uuid4())
-    session = db.query(SessionModel).filter(SessionModel.id == current_session_id).first()
-
-    if not session:
-        session = SessionModel(id=current_session_id)
-        db.add(session)
-        db.commit()
-        db.refresh(session)
-
-    docs = session.get_documents()
-
-    for file in files:
-        file_bytes = await file.read()
-        extracted_text = ""
-        method_used = "Native PDF"
-        pages = 1
-
-        if file.filename.lower().endswith(".pdf"):
-            extracted_text, pages = extract_pdf_data(file_bytes)
-            if not extracted_text:
-                extracted_text, _ = extract_image_data(file_bytes)
-                method_used = "OCR Fallback"
-        elif any(file.filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"]):
-            extracted_text, pages = extract_image_data(file_bytes)
-            method_used = "Tesseract OCR"
-        else:
-            try:
-                extracted_text = file_bytes.decode("utf-8")
-                method_used = "Plain Text"
-            except Exception:
-                extracted_text = ""
-
-        word_count = len(extracted_text.split()) if extracted_text else 0
-
-        docs[file.filename] = {
-            "text": extracted_text,
-            "method": method_used,
-            "pages": pages,
-            "word_count": word_count,
-            "size_kb": round(len(file_bytes) / 1024, 1),
-            "uploaded_at": datetime.utcnow().strftime("%H:%M:%S")
-        }
-
-    session.set_documents(docs)
-    session.combined_text = "\n\n".join(
-        [f"### Document: {name}\n{d['text']}" for name, d in docs.items() if d['text']]
-    )
-    session.last_accessed = datetime.utcnow()
-    db.commit()
-
-    return {
-        "session_id": current_session_id,
-        "documents": docs,
-        "total_documents": len(docs)
-    }
-
-
-@app.post("/api/delete-doc")
-async def delete_document(req: DeleteDocRequest, db: Session = Depends(get_db)):
-    session = db.query(SessionModel).filter(SessionModel.id == req.session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found.")
-
-    docs = session.get_documents()
-    if req.filename in docs:
-        del docs[req.filename]
-        session.set_documents(docs)
-        session.combined_text = "\n\n".join(
-            [f"### Document: {name}\n{d['text']}" for name, d in docs.items() if d['text']]
-        )
-        db.commit()
-
-    return {"status": "success", "documents": docs}
-
-
-@app.post("/api/summarize-stream")
-async def generate_summary_stream(req: SummarizeRequest, db: Session = Depends(get_db)):
-    session = db.query(SessionModel).filter(SessionModel.id == req.session_id).first()
-    if not session or not session.combined_text.strip():
-        raise HTTPException(status_code=400, detail="No readable text available in session.")
-
-    length_guidelines = {
-        "short": "Brief, ultra-concise TL;DR (3-4 bullet points maximum).",
-        "medium": "Balanced executive summary (5-8 structured points).",
-        "long": "Comprehensive breakdown with all key findings and next steps."
-    }
-
-    prompt = f"""
-    You are an expert Document Intelligence Assistant.
-    Detail Level: {length_guidelines.get(req.summary_length, length_guidelines['medium'])}
-    Language: Translate and output in {req.target_language}.
-
-    Format using clean Markdown:
-    - **Executive Brief**
-    - **Key Highlights** (Bullet points)
-    - **Action Points & Metrics**
-    Ground strictly in the provided text.
-
-    --- DOCUMENT CONTEXT ---
-    {session.combined_text[:30000]}
-    """
-
-    def token_stream():
-        full_text = ""
-        response = client.models.generate_content_stream(
-            model="gemini-3.6-flash",
-            contents=prompt
-        )
-        for chunk in response:
-            if chunk.text:
-                full_text += chunk.text
-                yield chunk.text
+@app.post("/summarize")
+async def summarize_document(req: SummarizeRequest):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT extracted_text FROM documents WHERE id = ?", (req.doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Document text not found")
         
-        # Save summary to DB
-        summary_dict = session.get_summary()
-        summary_dict[req.summary_length] = full_text
-        session.set_summary(summary_dict)
-        db.commit()
-
-    return StreamingResponse(token_stream(), media_type="text/plain")
-
-
-@app.post("/api/chat-stream")
-async def document_chat_stream(req: ChatRequest, db: Session = Depends(get_db)):
-    session = db.query(SessionModel).filter(SessionModel.id == req.session_id).first()
-    if not session or not session.combined_text.strip():
-        raise HTTPException(status_code=400, detail="No document context found in session.")
-
-    chat_prompt = f"""
-    You are a voice-ready, concise Document Assistant.
-    Answer accurately using ONLY the context provided.
-    If context doesn't have it, state that directly.
-
-    --- DOCUMENT CONTEXT ---
-    {session.combined_text[:30000]}
-
-    --- QUESTION ---
-    {req.message}
+    doc_text = budget_tokens(row[0])
+    
+    prompt = f"""
+    You are DocuIQ, an expert document analyst.
+    Summarize the following document in {req.language}.
+    Summary Length/Style: {req.length}.
+    Use clean Markdown formatting with bullet points and bold key terms.
+    
+    DOCUMENT CONTENT:
+    {doc_text}
     """
+    
+    async def generate_stream() -> AsyncGenerator[str, None]:
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        except Exception as err:
+            yield f"\n[Streaming Error: {str(err)}]"
 
-    def chat_token_stream():
-        full_reply = ""
-        response = client.models.generate_content_stream(
-            model="gemini-3.6-flash",
-            contents=chat_prompt
-        )
-        for chunk in response:
-            if chunk.text:
-                full_reply += chunk.text
-                yield chunk.text
+    return StreamingResponse(generate_stream(), media_type="text/plain")
 
-        history = session.get_chat_history()
-        history.append({"sender": "user", "text": req.message})
-        history.append({"sender": "ai", "text": full_reply})
-        session.set_chat_history(history)
-        db.commit()
+class ChatRequest(BaseModel):
+    doc_id: str
+    question: str
 
-    return StreamingResponse(chat_token_stream(), media_type="text/plain")
+@app.post("/chat")
+async def chat_document(req: ChatRequest):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT extracted_text FROM documents WHERE id = ?", (req.doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Document text not found")
+        
+    doc_text = budget_tokens(row[0])
+    
+    prompt = f"""
+    Answer the user's question strictly based ONLY on the document context below.
+    If the answer is not present, state clearly: "I cannot find this information in the document."
+    Keep the tone direct, concise, and helpful.
+    
+    DOCUMENT CONTEXT:
+    {doc_text}
+    
+    QUESTION:
+    {req.question}
+    """
+    
+    async def generate_chat_stream() -> AsyncGenerator[str, None]:
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        except Exception as err:
+            yield f"\n[Error: {str(err)}]"
 
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    return StreamingResponse(generate_chat_stream(), media_type="text/plain")
