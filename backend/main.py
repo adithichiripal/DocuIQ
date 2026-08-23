@@ -6,19 +6,18 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import fitz  # PyMuPDF
-import google.generativeai as genai
+from groq import Groq
 from pydantic import BaseModel
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# Initialize Groq client
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Production models available across free and paid tier keys
-MODEL_CANDIDATES = [
-    "gemini-1.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-    "gemini-1.5-pro",
+# Ultra-fast open production models on Groq
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
 ]
 
 app = FastAPI(title="DocuIQ Backend", version="2.0.0")
@@ -84,7 +83,7 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
         if filename.lower().endswith(".pdf"):
             extracted_text, total_pages = extract_pdf_text(content)
         else:
-            extracted_text = f"Uploaded visual image document: {filename}."
+            extracted_text = f"Uploaded visual document: {filename}."
             total_pages = 1
             
         word_count = len(extracted_text.split())
@@ -125,35 +124,34 @@ async def summarize_document(req: SummarizeRequest):
         raise HTTPException(status_code=404, detail="Document text not found")
         
     doc_text = budget_tokens(row[0])
-    prompt = f"""
-    You are DocuIQ, an expert document analyst.
-    Summarize the following document in {req.language}.
-    Summary Length/Style: {req.length}.
-    Use clean Markdown formatting with clear bullet points and bold key terms.
-    
-    DOCUMENT CONTENT:
-    {doc_text}
-    """
+    system_prompt = f"You are DocuIQ, an expert document intelligence assistant. Summarize the content in {req.language}. Desired Length/Style: {req.length}. Use clean markdown formatting with bullet points."
     
     async def generate_stream() -> AsyncGenerator[str, None]:
+        if not groq_client:
+            yield "\n[Error: GROQ_API_KEY environment variable is missing on Render.]"
+            return
+            
         last_error = ""
-        for m_name in MODEL_CANDIDATES:
+        for model_name in GROQ_MODELS:
             try:
-                model = genai.GenerativeModel(m_name)
-                response = model.generate_content(prompt, stream=True)
-                has_yielded = False
+                response = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"DOCUMENT CONTENT:\n{doc_text}"},
+                    ],
+                    stream=True,
+                )
                 for chunk in response:
-                    if chunk.text:
-                        has_yielded = True
-                        yield chunk.text
-                if has_yielded:
-                    return
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        yield content
+                return
             except Exception as e:
                 last_error = str(e)
-                print(f"[Gemini Error on {m_name}]: {last_error}")
                 continue
                 
-        yield f"\n[Streaming Error: {last_error or 'No response from Gemini models.'}]"
+        yield f"\n[Streaming Error: {last_error}]"
 
     return StreamingResponse(generate_stream(), media_type="text/plain")
 
@@ -173,34 +171,33 @@ async def chat_document(req: ChatRequest):
         raise HTTPException(status_code=404, detail="Document text not found")
         
     doc_text = budget_tokens(row[0])
-    prompt = f"""
-    Answer the user's question strictly based ONLY on the document context below.
-    If the answer is not present, state clearly: "I cannot find this information in the document."
-    Keep the tone direct and concise.
-    
-    DOCUMENT CONTEXT:
-    {doc_text}
-    
-    QUESTION:
-    {req.question}
-    """
+    system_prompt = "You are DocuIQ Copilot. Answer user questions strictly based ONLY on the provided document. If information is absent, state: 'I cannot find this information in the document.'"
     
     async def generate_chat_stream() -> AsyncGenerator[str, None]:
+        if not groq_client:
+            yield "\n[Error: GROQ_API_KEY is missing on Render.]"
+            return
+            
         last_error = ""
-        for m_name in MODEL_CANDIDATES:
+        for model_name in GROQ_MODELS:
             try:
-                model = genai.GenerativeModel(m_name)
-                response = model.generate_content(prompt, stream=True)
-                has_yielded = False
+                response = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"DOCUMENT CONTEXT:\n{doc_text}\n\nQUESTION:\n{req.question}"},
+                    ],
+                    stream=True,
+                )
                 for chunk in response:
-                    if chunk.text:
-                        has_yielded = True
-                        yield chunk.text
-                if has_yielded:
-                    return
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        yield content
+                return
             except Exception as e:
                 last_error = str(e)
                 continue
-        yield f"\n[Chat Error: {last_error or 'Unable to generate response.'}]"
+                
+        yield f"\n[Chat Error: {last_error}]"
 
     return StreamingResponse(generate_chat_stream(), media_type="text/plain")
