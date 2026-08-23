@@ -13,17 +13,20 @@ from pydantic import BaseModel
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Active text models with automatic fallback
+# Active text models
 GROQ_TEXT_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.6-27b",
 ]
 
-# Active vision model for OCR
-GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
+# Active multimodal vision models for OCR and scanned documents
+GROQ_VISION_MODELS = [
+    "qwen/qwen3.6-27b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+]
 
-app = FastAPI(title="DocuIQ Backend", version="2.1.0")
+app = FastAPI(title="DocuIQ Backend", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,40 +57,47 @@ def init_db():
 init_db()
 
 def ocr_image_with_groq(image_bytes: bytes) -> str:
-    """Extracts text from an image or scanned page using Groq Vision."""
+    """Extracts text, numbers, and data from images using Groq Multimodal Vision."""
     if not groq_client:
         return ""
-    try:
-        base64_img = base64.b64encode(image_bytes).decode("utf-8")
-        response = groq_client.chat.completions.create(
-            model=GROQ_VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Transcribe all visible text, tables, numbers, and structured content from this image accurately. Output only the extracted content."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_img}"
+    
+    base64_img = base64.b64encode(image_bytes).decode("utf-8")
+    
+    for model in GROQ_VISION_MODELS:
+        try:
+            response = groq_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Extract and transcribe all readable text, tables, numbers, headers, and code from this image. Output only the extracted textual content clearly."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_img}"
+                                }
                             }
-                        }
-                    ]
-                }
-            ],
-            temperature=0.1,
-            max_tokens=2048,
-        )
-        return response.choices[0].message.content or ""
-    except Exception as e:
-        print(f"Vision OCR Error: {e}")
-        return ""
+                        ]
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=3000,
+            )
+            extracted = response.choices[0].message.content
+            if extracted and len(extracted.strip()) > 5:
+                return extracted.strip()
+        except Exception as err:
+            print(f"Vision model {model} error: {err}")
+            continue
+            
+    return ""
 
 def extract_pdf_content(file_bytes: bytes, max_pages: int = 15) -> tuple[str, int]:
-    """Extracts selectable text; falls back to Vision OCR for scanned pages."""
+    """Extracts native selectable text; triggers Vision OCR if page is scanned/image-only."""
     text_chunks = []
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
         total_pages = min(len(doc), max_pages)
@@ -95,19 +105,19 @@ def extract_pdf_content(file_bytes: bytes, max_pages: int = 15) -> tuple[str, in
             page = doc[page_idx]
             page_text = page.get_text().strip()
             
-            # If page has no digital text, render page as image and run Vision OCR
-            if len(page_text) < 30:
+            # Scanned page check: if digital text is empty or minimal, render and OCR
+            if len(page_text) < 25:
                 pix = page.get_pixmap(dpi=150)
                 img_bytes = pix.tobytes("jpeg")
-                ocr_text = ocr_image_with_groq(img_bytes)
-                if ocr_text:
-                    page_text = ocr_text
+                ocr_result = ocr_image_with_groq(img_bytes)
+                if ocr_result:
+                    page_text = ocr_result
 
             if page_text:
                 text_chunks.append(f"--- Page {page_idx + 1} ---\n{page_text}")
                 
     extracted = "\n\n".join(text_chunks)
-    return (extracted if extracted else "No readable content found."), total_pages
+    return (extracted if extracted else "No extractable text found in document."), total_pages
 
 def budget_tokens(text: str, max_chars: int = 35000) -> str:
     if len(text) > max_chars:
@@ -131,7 +141,7 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
         elif any(filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
             extracted_text = ocr_image_with_groq(content)
             if not extracted_text:
-                extracted_text = f"Visual image file: {filename}."
+                extracted_text = f"Uploaded image: {filename}. (No OCR text recognized)"
             total_pages = 1
         else:
             extracted_text = content.decode("utf-8", errors="ignore")
@@ -256,5 +266,6 @@ async def chat_document(req: ChatRequest):
                 continue
                 
         yield f"\n[Chat Error: {last_error}]"
+        
 
     return StreamingResponse(generate_chat_stream(), media_type="text/plain")
