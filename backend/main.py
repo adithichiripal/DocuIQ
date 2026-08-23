@@ -4,7 +4,7 @@ import sqlite3
 from typing import AsyncGenerator
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from PIL import Image
@@ -18,7 +18,7 @@ if GEMINI_API_KEY:
 
 app = FastAPI(title="DocuIQ Backend", version="2.0.0")
 
-# Allow all origins, methods, and headers for Vercel integration
+# Enable CORS for all origins and headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,6 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# SQLite initialization
 DB_FILE = "docuiq.db"
 
 def init_db():
@@ -47,6 +48,7 @@ def init_db():
 
 init_db()
 
+# Extraction and token-budgeting helpers
 def process_image_ocr(image_bytes: bytes) -> str:
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode != "RGB":
@@ -79,11 +81,11 @@ def budget_tokens(text: str, max_chars: int = 35000) -> str:
         return text[:half] + "\n\n[... truncated for rapid streaming ...]\n\n" + text[-half:]
     return text
 
-# Dedicated Health Check Endpoints
+# Health Check Endpoints
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "online", "service": "DocuIQ Backend API"}
+    return JSONResponse(content={"status": "online", "service": "DocuIQ Backend API"})
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...)):
