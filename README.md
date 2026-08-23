@@ -25,15 +25,15 @@ DocuIQ is built as a decoupled, cloud-native monorepo separating a high-performa
 
 ## 3. System Architecture
 
+## 3. System Architecture
+
 ```mermaid
 graph TD
-    A[Next.js 14 + Tailwind CSS<br/>(Voice & Markdown UI)] -->|REST API / Token Streams| B[FastAPI Async Server]
-    B --> C[PyPDF & Tesseract OCR<br/>(Ingestion Engine)]
-    B --> D[Google Gemini API<br/>(Summarization & Copilot)]
-    B --> E[SQLite / SQLAlchemy<br/>(Persistent Session Store)]
+    A["Next.js 14 + Tailwind CSS<br/>(Voice & Markdown UI)"] -->|REST API / Token Streams| B["FastAPI Async Server"]
+    B --> C["PyPDF & Tesseract OCR<br/>(Ingestion Engine)"]
+    B --> D["Google Gemini API<br/>(Summarization & Copilot)"]
+    B --> E["SQLite / SQLAlchemy<br/>(Persistent Session Store)"]
 ```
-
----
 
 ## 4. Tech Stack
 
