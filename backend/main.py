@@ -1,3 +1,4 @@
+import base64
 import os
 import sqlite3
 import tempfile
@@ -12,14 +13,17 @@ from pydantic import BaseModel
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Active supported models on Groq
-GROQ_MODELS = [
+# Active text models with automatic fallback
+GROQ_TEXT_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.6-27b",
 ]
 
-app = FastAPI(title="DocuIQ Backend", version="2.0.0")
+# Active vision model for OCR
+GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
+
+app = FastAPI(title="DocuIQ Backend", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,18 +53,61 @@ def init_db():
 
 init_db()
 
-def extract_pdf_text(file_bytes: bytes, max_pages: int = 35) -> tuple[str, int]:
+def ocr_image_with_groq(image_bytes: bytes) -> str:
+    """Extracts text from an image or scanned page using Groq Vision."""
+    if not groq_client:
+        return ""
+    try:
+        base64_img = base64.b64encode(image_bytes).decode("utf-8")
+        response = groq_client.chat.completions.create(
+            model=GROQ_VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Transcribe all visible text, tables, numbers, and structured content from this image accurately. Output only the extracted content."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_img}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            temperature=0.1,
+            max_tokens=2048,
+        )
+        return response.choices[0].message.content or ""
+    except Exception as e:
+        print(f"Vision OCR Error: {e}")
+        return ""
+
+def extract_pdf_content(file_bytes: bytes, max_pages: int = 15) -> tuple[str, int]:
+    """Extracts selectable text; falls back to Vision OCR for scanned pages."""
     text_chunks = []
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
         total_pages = min(len(doc), max_pages)
         for page_idx in range(total_pages):
             page = doc[page_idx]
-            text = page.get_text().strip()
-            if text:
-                text_chunks.append(f"--- Page {page_idx + 1} ---\n{text}")
+            page_text = page.get_text().strip()
+            
+            # If page has no digital text, render page as image and run Vision OCR
+            if len(page_text) < 30:
+                pix = page.get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("jpeg")
+                ocr_text = ocr_image_with_groq(img_bytes)
+                if ocr_text:
+                    page_text = ocr_text
+
+            if page_text:
+                text_chunks.append(f"--- Page {page_idx + 1} ---\n{page_text}")
                 
     extracted = "\n\n".join(text_chunks)
-    return (extracted if extracted else "Visual document content."), total_pages
+    return (extracted if extracted else "No readable content found."), total_pages
 
 def budget_tokens(text: str, max_chars: int = 35000) -> str:
     if len(text) > max_chars:
@@ -68,8 +115,8 @@ def budget_tokens(text: str, max_chars: int = 35000) -> str:
         return text[:half] + "\n\n[... truncated ...]\n\n" + text[-half:]
     return text
 
-@app.get("/")
-@app.get("/health")
+@app.api_route("/", methods=["GET", "HEAD"])
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health_check():
     return JSONResponse(content={"status": "online", "service": "DocuIQ Backend API"})
 
@@ -80,9 +127,14 @@ async def upload_document(file: UploadFile = File(...), doc_id: str = Form(...))
         filename = file.filename or "document"
         
         if filename.lower().endswith(".pdf"):
-            extracted_text, total_pages = extract_pdf_text(content)
+            extracted_text, total_pages = extract_pdf_content(content)
+        elif any(filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
+            extracted_text = ocr_image_with_groq(content)
+            if not extracted_text:
+                extracted_text = f"Visual image file: {filename}."
+            total_pages = 1
         else:
-            extracted_text = f"Uploaded visual document: {filename}."
+            extracted_text = content.decode("utf-8", errors="ignore")
             total_pages = 1
             
         word_count = len(extracted_text.split())
@@ -123,7 +175,10 @@ async def summarize_document(req: SummarizeRequest):
         raise HTTPException(status_code=404, detail="Document text not found")
         
     doc_text = budget_tokens(row[0])
-    system_prompt = f"You are DocuIQ, an expert document intelligence assistant. Summarize the content in {req.language}. Desired Length/Style: {req.length}. Use clean markdown formatting with bullet points and bold key terms."
+    system_prompt = (
+        f"You are DocuIQ, an expert document intelligence assistant. Summarize the provided document in {req.language}. "
+        f"Desired Length/Style: {req.length}. Structure your response cleanly using bullet points and bold key terms."
+    )
     
     async def generate_stream() -> AsyncGenerator[str, None]:
         if not groq_client:
@@ -131,7 +186,7 @@ async def summarize_document(req: SummarizeRequest):
             return
             
         last_error = ""
-        for model_name in GROQ_MODELS:
+        for model_name in GROQ_TEXT_MODELS:
             try:
                 response = groq_client.chat.completions.create(
                     model=model_name,
@@ -170,7 +225,10 @@ async def chat_document(req: ChatRequest):
         raise HTTPException(status_code=404, detail="Document text not found")
         
     doc_text = budget_tokens(row[0])
-    system_prompt = "You are DocuIQ Copilot. Answer user questions strictly based ONLY on the provided document. If information is absent, state: 'I cannot find this information in the document.'"
+    system_prompt = (
+        "You are DocuIQ Copilot. Answer user questions strictly based ONLY on the provided document. "
+        "If information is absent, state: 'I cannot find this information in the document.'"
+    )
     
     async def generate_chat_stream() -> AsyncGenerator[str, None]:
         if not groq_client:
@@ -178,7 +236,7 @@ async def chat_document(req: ChatRequest):
             return
             
         last_error = ""
-        for model_name in GROQ_MODELS:
+        for model_name in GROQ_TEXT_MODELS:
             try:
                 response = groq_client.chat.completions.create(
                     model=model_name,
