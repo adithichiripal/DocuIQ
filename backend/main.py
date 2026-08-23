@@ -17,7 +17,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Set Tesseract binary path for Linux containers
+# Point directly to the pinned 3.6-flash model
+MODEL = genai.GenerativeModel("models/gemini-3.6-flash")
+
 if os.path.exists("/usr/bin/tesseract"):
     pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
@@ -51,50 +53,31 @@ def init_db():
 
 init_db()
 
-def get_gemini_model():
-    """Dynamically finds whatever model your Gemini API key has access to."""
-    try:
-        available = [
-            m.name for m in genai.list_models()
-            if "generateContent" in m.supported_generation_methods
-        ]
-        for pref in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
-            for name in available:
-                if pref in name:
-                    return genai.GenerativeModel(name)
-        if available:
-            return genai.GenerativeModel(available[0])
-    except Exception as e:
-        print(f"Discovery error: {e}")
-    return genai.GenerativeModel("models/gemini-1.5-flash")
-
 def process_image_ocr(image_bytes: bytes) -> str:
     try:
-        img = Image.open(io.BytesIO(image_bytes))
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        if img.width > 1600:
-            ratio = 1600 / img.width
-            img = img.resize((1600, int(img.height * ratio)), Image.Resampling.LANCZOS)
-        return pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+        img = Image.open(io.BytesIO(image_bytes)).convert("L")
+        if img.width > 1200:
+            ratio = 1200 / img.width
+            img = img.resize((1200, int(img.height * ratio)), Image.Resampling.BILINEAR)
+        return pytesseract.image_to_string(img, config="--psm 3 --oem 1").strip()
     except Exception as e:
-        print(f"[OCR Warning]: {e}")
+        print(f"[OCR Error]: {e}")
         return "OCR processing failed or image contains no readable text."
 
-def process_pdf_stream(file_bytes: bytes, max_pages: int = 50) -> tuple[str, int]:
+def process_pdf_stream(file_bytes: bytes, max_pages: int = 25) -> tuple[str, int]:
     text_chunks = []
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
         total_pages = min(len(doc), max_pages)
         for page_idx in range(total_pages):
             page = doc[page_idx]
             page_text = page.get_text().strip()
-            if not page_text or len(page_text) < 30:
+            if not page_text or len(page_text) < 25:
                 try:
-                    pix = page.get_pixmap(dpi=150)
-                    img = Image.open(io.BytesIO(pix.tobytes("png")))
-                    if img.width > 1600:
-                        img = img.resize((1600, int(img.height * (1600 / img.width))), Image.Resampling.LANCZOS)
-                    page_text = pytesseract.image_to_string(img, config="--psm 1 --oem 3").strip()
+                    pix = page.get_pixmap(dpi=120)
+                    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+                    if img.width > 1200:
+                        img = img.resize((1200, int(img.height * (1200 / img.width))), Image.Resampling.BILINEAR)
+                    page_text = pytesseract.image_to_string(img, config="--psm 3 --oem 1").strip()
                 except Exception as ocr_err:
                     print(f"[OCR Page {page_idx} Error]: {ocr_err}")
             
@@ -177,8 +160,7 @@ async def summarize_document(req: SummarizeRequest):
     
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
-            model = get_gemini_model()
-            response = model.generate_content(prompt, stream=True)
+            response = MODEL.generate_content(prompt, stream=True)
             for chunk in response:
                 if chunk.text:
                     yield chunk.text
@@ -217,8 +199,7 @@ async def chat_document(req: ChatRequest):
     
     async def generate_chat_stream() -> AsyncGenerator[str, None]:
         try:
-            model = get_gemini_model()
-            response = model.generate_content(prompt, stream=True)
+            response = MODEL.generate_content(prompt, stream=True)
             for chunk in response:
                 if chunk.text:
                     yield chunk.text
